@@ -62,7 +62,7 @@ func TestExtractCoopUI(t *testing.T) {
 	}
 	// The embed ships only the ui/ SOURCE (the built pak is a gitignored
 	// artifact); the installer rebuilds the pak from this.
-	for _, want := range []string{"ui/coop.menu", "ui/menus.txt"} {
+	for _, want := range []string{"ui/coop.menu", "ui/menus.txt", "ui/coop_buttons.txt", "jk2coop_gamepad.cfg"} {
 		if _, err := os.Stat(filepath.Join(dest, filepath.FromSlash(want))); err != nil {
 			t.Errorf("coop-ui %s missing: %v", want, err)
 		}

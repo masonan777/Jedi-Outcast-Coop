@@ -1,10 +1,15 @@
 // ============================================================================
-// Co-op menu — original authorship (not derived from any retail menu file).
-// Part of the jedi-outcast-rebuild co-op mod; ships in zz-coop-ui.pk3.
+// Co-op menus -- original authorship (not derived from any retail menu file).
+// Part of the jedi-outcast-coop mod; ships in zz-coop-ui.pk3.
 //
-// Reachable in-game via `uimenu coopMenu`. Drives the D1/D2 console commands
-// through the coopHost / coopRefresh / coopJoin / coopConnect uiScript verbs
-// and the FEEDER_COOP_SERVERS server list.
+// coopMenu        main menu > CO-OP: host a new game, join (network list or IP),
+//                 or start split screen on this PC
+// coopIngameMenu  pause menu > CO-OP: host the running game, add player 2
+//
+// The CO-OP buttons that open them are added to the stock menus by the engine
+// (ui/coop_buttons.txt, UI_CoopAddMenuButtons). uiScript verbs: coopNewGame,
+// coopSplitScreen, coopHost, coopRefresh, coopJoin, coopConnect (ui_main.cpp);
+// the server list is FEEDER_COOP_SERVERS.
 // ============================================================================
 {
 	menuDef
@@ -14,21 +19,23 @@
 		rect					0 0 640 480
 		visible					1
 		focusColor				1 1 1 1
+		descX					320
+		descY					420
+		descScale				0.7
+		descColor				.235 .882 .847 1
 		descAlignment			ITEM_ALIGN_CENTER
 
 		onOpen
 		{
-			// Default the max-players selector if unset, then refresh the LAN list.
 			setcvar				ui_coopMaxPlayers 2 ;
 			uiScript			coopRefresh
 		}
-
 		onESC
 		{
-			uiScript			closeingame
+			close				all ;
+			open				mainMenu
 		}
 
-		// --- background --------------------------------------------------
 		itemDef
 		{
 			name				background
@@ -39,8 +46,6 @@
 			visible				1
 			decoration
 		}
-
-		// --- title -------------------------------------------------------
 		itemDef
 		{
 			name				title
@@ -55,29 +60,26 @@
 			visible				1
 			decoration
 		}
-
-		// --- HOST section ------------------------------------------------
 		itemDef
 		{
-			name				hostLabel
+			name				onlineLabel
 			style				WINDOW_STYLE_EMPTY
-			rect				60 90 200 20
-			text				"HOST A GAME"
+			rect				40 80 270 20
+			text				"ONLINE / YOUR NETWORK"
 			font				3
 			textscale			0.9
 			forecolor			0.8 0.8 1 1
 			visible				1
 			decoration
 		}
-
-		// Max-players selector (2-4), bound to ui_coopMaxPlayers.
 		itemDef
 		{
 			name				maxPlayers
 			type				ITEM_TYPE_MULTI
 			style				WINDOW_STYLE_EMPTY
-			rect				60 115 240 20
-			text				"Max players:"
+			rect				40 108 270 20
+			text				"Players:"
+			descText			"How many players can join (you included)"
 			cvar				"ui_coopMaxPlayers"
 			cvarFloatList		{ "2" 2  "3" 3  "4" 4 }
 			font				3
@@ -86,50 +88,105 @@
 			forecolor			0.65 0.65 1 1
 			visible				1
 		}
-
+		itemDef
+		{
+			name				difficulty
+			type				ITEM_TYPE_MULTI
+			style				WINDOW_STYLE_EMPTY
+			rect				40 130 270 20
+			text				"Difficulty:"
+			descText			"Difficulty of the new game"
+			cvar				"g_spskill"
+			cvarFloatList		{ "Padawan" 0  "Jedi" 1  "Jedi Knight" 2  "Jedi Master" 3 }
+			font				3
+			textscale			0.8
+			textalign			ITEM_ALIGN_LEFT
+			forecolor			0.65 0.65 1 1
+			visible				1
+		}
+		itemDef
+		{
+			name				hostButton_glow
+			style				WINDOW_STYLE_SHADER
+			rect				40 158 230 24
+			background			"gfx/menus/menu_buttonback"
+			forecolor			1 1 1 1
+			visible				0
+			decoration
+		}
 		itemDef
 		{
 			name				hostButton
 			type				ITEM_TYPE_BUTTON
 			style				WINDOW_STYLE_EMPTY
-			rect				60 145 120 24
-			text				"HOST"
+			rect				40 158 230 24
+			text				"HOST NEW GAME"
+			descText			"Start the campaign; friends join with your IP address"
 			font				3
-			textscale			1
+			textscale			0.9
 			textalign			ITEM_ALIGN_CENTER
-			textalignx			60
+			textstyle			3
+			textalignx			115
 			forecolor			0.65 0.65 1 1
 			visible				1
+			mouseEnter
+			{
+				show			hostButton_glow
+			}
+			mouseExit
+			{
+				hide			hostButton_glow
+			}
 			action
 			{
 				play			"sound/interface/button1.wav" ;
-				uiScript		coopHost
+				uiScript		coopNewGame
 			}
 		}
-
-		// --- JOIN (LAN list) section -------------------------------------
+		itemDef
+		{
+			name				hostInfo1
+			style				WINDOW_STYLE_EMPTY
+			rect				40 188 280 20
+			text				"Friends join with your IP address (port 29070)."
+			font				2
+			textscale			0.6
+			forecolor			0.75 0.75 0.75 1
+			visible				1
+			decoration
+		}
+		itemDef
+		{
+			name				hostInfo2
+			style				WINDOW_STYLE_EMPTY
+			rect				40 204 280 20
+			text				"To host a saved game: load it, then Esc > CO-OP."
+			font				2
+			textscale			0.6
+			forecolor			0.75 0.75 0.75 1
+			visible				1
+			decoration
+		}
 		itemDef
 		{
 			name				joinLabel
 			style				WINDOW_STYLE_EMPTY
-			rect				60 200 200 20
-			text				"JOIN A LAN GAME"
+			rect				40 236 270 20
+			text				"JOIN A GAME"
 			font				3
 			textscale			0.9
 			forecolor			0.8 0.8 1 1
 			visible				1
 			decoration
 		}
-
-		// The discovered-server list, fed by FEEDER_COOP_SERVERS.
 		itemDef
 		{
 			name				serverList
 			type				ITEM_TYPE_LISTBOX
 			style				WINDOW_STYLE_EMPTY
-			rect				60 225 400 120
+			rect				40 260 270 80
 			feeder				0x18					// FEEDER_COOP_SERVERS
-			elementwidth		400
+			elementwidth		270
 			elementheight		16
 			elementtype			LISTBOX_TEXT
 			textscale			0.7
@@ -137,75 +194,98 @@
 			border				1
 			bordercolor			0.5 0.5 0.5 1
 			visible				1
-			// Double-click a row to join it.
+			descText			"Games on your network (double-click to join)"
 			doubleClick
 			{
 				uiScript		coopJoin
 			}
 		}
-
+		itemDef
+		{
+			name				refreshButton_glow
+			style				WINDOW_STYLE_SHADER
+			rect				40 346 130 24
+			background			"gfx/menus/menu_buttonback"
+			forecolor			1 1 1 1
+			visible				0
+			decoration
+		}
 		itemDef
 		{
 			name				refreshButton
 			type				ITEM_TYPE_BUTTON
 			style				WINDOW_STYLE_EMPTY
-			rect				470 225 100 24
+			rect				40 346 130 24
 			text				"REFRESH"
+			descText			"Look for games on your network again"
 			font				3
 			textscale			0.8
 			textalign			ITEM_ALIGN_CENTER
-			textalignx			50
+			textstyle			3
+			textalignx			65
 			forecolor			0.65 0.65 1 1
 			visible				1
+			mouseEnter
+			{
+				show			refreshButton_glow
+			}
+			mouseExit
+			{
+				hide			refreshButton_glow
+			}
 			action
 			{
 				play			"sound/interface/button1.wav" ;
 				uiScript		coopRefresh
 			}
 		}
-
+		itemDef
+		{
+			name				joinButton_glow
+			style				WINDOW_STYLE_SHADER
+			rect				180 346 130 24
+			background			"gfx/menus/menu_buttonback"
+			forecolor			1 1 1 1
+			visible				0
+			decoration
+		}
 		itemDef
 		{
 			name				joinButton
 			type				ITEM_TYPE_BUTTON
 			style				WINDOW_STYLE_EMPTY
-			rect				470 255 100 24
+			rect				180 346 130 24
 			text				"JOIN"
+			descText			"Join the game selected above"
 			font				3
 			textscale			0.8
 			textalign			ITEM_ALIGN_CENTER
-			textalignx			50
+			textstyle			3
+			textalignx			65
 			forecolor			0.65 0.65 1 1
 			visible				1
+			mouseEnter
+			{
+				show			joinButton_glow
+			}
+			mouseExit
+			{
+				hide			joinButton_glow
+			}
 			action
 			{
 				play			"sound/interface/button1.wav" ;
 				uiScript		coopJoin
 			}
 		}
-
-		// --- DIRECT CONNECT section --------------------------------------
-		itemDef
-		{
-			name				directLabel
-			style				WINDOW_STYLE_EMPTY
-			rect				60 370 200 20
-			text				"DIRECT CONNECT"
-			font				3
-			textscale			0.9
-			forecolor			0.8 0.8 1 1
-			visible				1
-			decoration
-		}
-
-		// Typed ip[:port], bound to ui_coopAddress.
 		itemDef
 		{
 			name				addressField
 			type				ITEM_TYPE_EDITFIELD
 			style				WINDOW_STYLE_EMPTY
-			rect				60 395 300 20
-			text				"Address:"
+			rect				40 380 200 20
+			text				"IP:"
+			descText			"Type the host's IP address (and :port if not 29070)"
 			cvar				"ui_coopAddress"
 			maxChars			48
 			font				3
@@ -214,28 +294,194 @@
 			forecolor			0.65 0.65 1 1
 			visible				1
 		}
-
+		itemDef
+		{
+			name				connectButton_glow
+			style				WINDOW_STYLE_SHADER
+			rect				240 378 80 24
+			background			"gfx/menus/menu_buttonback"
+			forecolor			1 1 1 1
+			visible				0
+			decoration
+		}
 		itemDef
 		{
 			name				connectButton
 			type				ITEM_TYPE_BUTTON
 			style				WINDOW_STYLE_EMPTY
-			rect				370 393 120 24
-			text				"CONNECT"
+			rect				240 378 80 24
+			text				"JOIN IP"
+			descText			"Join the game at the IP address you typed"
 			font				3
-			textscale			0.8
+			textscale			0.7
 			textalign			ITEM_ALIGN_CENTER
-			textalignx			60
+			textstyle			3
+			textalignx			40
 			forecolor			0.65 0.65 1 1
 			visible				1
+			mouseEnter
+			{
+				show			connectButton_glow
+			}
+			mouseExit
+			{
+				hide			connectButton_glow
+			}
 			action
 			{
 				play			"sound/interface/button1.wav" ;
 				uiScript		coopConnect
 			}
 		}
-
-		// --- BACK --------------------------------------------------------
+		itemDef
+		{
+			name				splitLabel
+			style				WINDOW_STYLE_EMPTY
+			rect				340 80 270 20
+			text				"SPLIT SCREEN (THIS PC)"
+			font				3
+			textscale			0.9
+			forecolor			0.8 0.8 1 1
+			visible				1
+			decoration
+		}
+		itemDef
+		{
+			name				splitDifficulty
+			type				ITEM_TYPE_MULTI
+			style				WINDOW_STYLE_EMPTY
+			rect				340 108 270 20
+			text				"Difficulty:"
+			descText			"Difficulty of the new game"
+			cvar				"g_spskill"
+			cvarFloatList		{ "Padawan" 0  "Jedi" 1  "Jedi Knight" 2  "Jedi Master" 3 }
+			font				3
+			textscale			0.8
+			textalign			ITEM_ALIGN_LEFT
+			forecolor			0.65 0.65 1 1
+			visible				1
+		}
+		itemDef
+		{
+			name				splitButton_glow
+			style				WINDOW_STYLE_SHADER
+			rect				340 158 250 24
+			background			"gfx/menus/menu_buttonback"
+			forecolor			1 1 1 1
+			visible				0
+			decoration
+		}
+		itemDef
+		{
+			name				splitButton
+			type				ITEM_TYPE_BUTTON
+			style				WINDOW_STYLE_EMPTY
+			rect				340 158 250 24
+			text				"START SPLIT SCREEN"
+			descText			"New game with player 2 in a second window on the right"
+			font				3
+			textscale			0.9
+			textalign			ITEM_ALIGN_CENTER
+			textstyle			3
+			textalignx			125
+			forecolor			0.65 0.65 1 1
+			visible				1
+			mouseEnter
+			{
+				show			splitButton_glow
+			}
+			mouseExit
+			{
+				hide			splitButton_glow
+			}
+			action
+			{
+				play			"sound/interface/button1.wav" ;
+				uiScript		coopSplitScreen
+			}
+		}
+		itemDef
+		{
+			name				splitInfo1
+			style				WINDOW_STYLE_EMPTY
+			rect				340 188 290 20
+			text				"Player 2's window opens on the right"
+			font				2
+			textscale			0.6
+			forecolor			0.75 0.75 0.75 1
+			visible				1
+			decoration
+		}
+		itemDef
+		{
+			name				splitInfo2
+			style				WINDOW_STYLE_EMPTY
+			rect				340 204 290 20
+			text				"once the level has loaded."
+			font				2
+			textscale			0.6
+			forecolor			0.75 0.75 0.75 1
+			visible				1
+			decoration
+		}
+		itemDef
+		{
+			name				splitInfo3
+			style				WINDOW_STYLE_EMPTY
+			rect				340 228 290 20
+			text				"2 controllers: one for each player."
+			font				2
+			textscale			0.6
+			forecolor			0.75 0.75 0.75 1
+			visible				1
+			decoration
+		}
+		itemDef
+		{
+			name				splitInfo4
+			style				WINDOW_STYLE_EMPTY
+			rect				340 244 290 20
+			text				"1 controller: player 2 uses it,"
+			font				2
+			textscale			0.6
+			forecolor			0.75 0.75 0.75 1
+			visible				1
+			decoration
+		}
+		itemDef
+		{
+			name				splitInfo5
+			style				WINDOW_STYLE_EMPTY
+			rect				340 260 290 20
+			text				"player 1 keyboard and mouse."
+			font				2
+			textscale			0.6
+			forecolor			0.75 0.75 0.75 1
+			visible				1
+			decoration
+		}
+		itemDef
+		{
+			name				splitInfo6
+			style				WINDOW_STYLE_EMPTY
+			rect				340 284 290 20
+			text				"Mid-game: Esc > CO-OP > ADD PLAYER 2."
+			font				2
+			textscale			0.6
+			forecolor			0.75 0.75 0.75 1
+			visible				1
+			decoration
+		}
+		itemDef
+		{
+			name				backButton_glow
+			style				WINDOW_STYLE_SHADER
+			rect				495 444 130 24
+			background			"gfx/menus/menu_buttonback"
+			forecolor			1 1 1 1
+			visible				0
+			decoration
+		}
 		itemDef
 		{
 			name				backButton
@@ -246,13 +492,277 @@
 			font				3
 			textscale			1
 			textalign			ITEM_ALIGN_CENTER
+			textstyle			3
 			textalignx			65
 			forecolor			0.65 0.65 1 1
 			visible				1
+			mouseEnter
+			{
+				show			backButton_glow
+			}
+			mouseExit
+			{
+				hide			backButton_glow
+			}
 			action
 			{
 				play			"sound/interface/button1.wav" ;
-				uiScript		closeingame
+				close			all ;
+				open			mainMenu
+			}
+		}
+	}
+
+	menuDef
+	{
+		name					"coopIngameMenu"
+		fullScreen				1
+		rect					0 0 640 480
+		visible					1
+		focusColor				1 1 1 1
+		descX					320
+		descY					420
+		descScale				0.7
+		descColor				.235 .882 .847 1
+		descAlignment			ITEM_ALIGN_CENTER
+
+		onOpen
+		{
+			setcvar				ui_coopMaxPlayers 2
+		}
+		onESC
+		{
+			close				all ;
+			open				ingameMainMenu
+		}
+
+		itemDef
+		{
+			name				background
+			style				WINDOW_STYLE_SHADER
+			rect				0 0 640 480
+			background			"gfx/menus/menu1"
+			forecolor			1 1 1 1
+			visible				1
+			decoration
+		}
+		itemDef
+		{
+			name				title
+			style				WINDOW_STYLE_EMPTY
+			rect				0 30 640 30
+			text				"CO-OP"
+			font				2
+			textscale			1.4
+			textalign			ITEM_ALIGN_CENTER
+			textalignx			320
+			forecolor			0.65 0.65 1 1
+			visible				1
+			decoration
+		}
+		itemDef
+		{
+			name				onlineLabel
+			style				WINDOW_STYLE_EMPTY
+			rect				120 90 400 20
+			text				"ONLINE / YOUR NETWORK"
+			font				3
+			textscale			0.9
+			forecolor			0.8 0.8 1 1
+			visible				1
+			decoration
+		}
+		itemDef
+		{
+			name				maxPlayers
+			type				ITEM_TYPE_MULTI
+			style				WINDOW_STYLE_EMPTY
+			rect				120 118 300 20
+			text				"Players:"
+			descText			"How many players can join (you included)"
+			cvar				"ui_coopMaxPlayers"
+			cvarFloatList		{ "2" 2  "3" 3  "4" 4 }
+			font				3
+			textscale			0.8
+			textalign			ITEM_ALIGN_LEFT
+			forecolor			0.65 0.65 1 1
+			visible				1
+		}
+		itemDef
+		{
+			name				hostButton_glow
+			style				WINDOW_STYLE_SHADER
+			rect				120 146 260 24
+			background			"gfx/menus/menu_buttonback"
+			forecolor			1 1 1 1
+			visible				0
+			decoration
+		}
+		itemDef
+		{
+			name				hostButton
+			type				ITEM_TYPE_BUTTON
+			style				WINDOW_STYLE_EMPTY
+			rect				120 146 260 24
+			text				"HOST THIS GAME"
+			descText			"Let friends join this game with your IP address"
+			font				3
+			textscale			0.9
+			textalign			ITEM_ALIGN_CENTER
+			textstyle			3
+			textalignx			130
+			forecolor			0.65 0.65 1 1
+			visible				1
+			mouseEnter
+			{
+				show			hostButton_glow
+			}
+			mouseExit
+			{
+				hide			hostButton_glow
+			}
+			action
+			{
+				play			"sound/interface/button1.wav" ;
+				uiScript		coopHost
+			}
+		}
+		itemDef
+		{
+			name				hostInfo1
+			style				WINDOW_STYLE_EMPTY
+			rect				120 176 400 20
+			text				"Friends join with your IP address (port 29070):"
+			font				2
+			textscale			0.6
+			forecolor			0.75 0.75 0.75 1
+			visible				1
+			decoration
+		}
+		itemDef
+		{
+			name				hostInfo2
+			style				WINDOW_STYLE_EMPTY
+			rect				120 192 400 20
+			text				"main menu > CO-OP > JOIN, or the IP field there."
+			font				2
+			textscale			0.6
+			forecolor			0.75 0.75 0.75 1
+			visible				1
+			decoration
+		}
+		itemDef
+		{
+			name				splitLabel
+			style				WINDOW_STYLE_EMPTY
+			rect				120 240 400 20
+			text				"SPLIT SCREEN (THIS PC)"
+			font				3
+			textscale			0.9
+			forecolor			0.8 0.8 1 1
+			visible				1
+			decoration
+		}
+		itemDef
+		{
+			name				splitButton_glow
+			style				WINDOW_STYLE_SHADER
+			rect				120 268 260 24
+			background			"gfx/menus/menu_buttonback"
+			forecolor			1 1 1 1
+			visible				0
+			decoration
+		}
+		itemDef
+		{
+			name				splitButton
+			type				ITEM_TYPE_BUTTON
+			style				WINDOW_STYLE_EMPTY
+			rect				120 268 260 24
+			text				"ADD PLAYER 2"
+			descText			"Open player 2's window next to yours, in this game"
+			font				3
+			textscale			0.9
+			textalign			ITEM_ALIGN_CENTER
+			textstyle			3
+			textalignx			130
+			forecolor			0.65 0.65 1 1
+			visible				1
+			mouseEnter
+			{
+				show			splitButton_glow
+			}
+			mouseExit
+			{
+				hide			splitButton_glow
+			}
+			action
+			{
+				play			"sound/interface/button1.wav" ;
+				uiScript		coopSplitScreen
+			}
+		}
+		itemDef
+		{
+			name				splitInfo1
+			style				WINDOW_STYLE_EMPTY
+			rect				120 298 400 20
+			text				"2 controllers: one for each player."
+			font				2
+			textscale			0.6
+			forecolor			0.75 0.75 0.75 1
+			visible				1
+			decoration
+		}
+		itemDef
+		{
+			name				splitInfo2
+			style				WINDOW_STYLE_EMPTY
+			rect				120 314 400 20
+			text				"1 controller: player 2 uses it, player 1 keyboard and mouse."
+			font				2
+			textscale			0.6
+			forecolor			0.75 0.75 0.75 1
+			visible				1
+			decoration
+		}
+		itemDef
+		{
+			name				backButton_glow
+			style				WINDOW_STYLE_SHADER
+			rect				495 444 130 24
+			background			"gfx/menus/menu_buttonback"
+			forecolor			1 1 1 1
+			visible				0
+			decoration
+		}
+		itemDef
+		{
+			name				backButton
+			type				ITEM_TYPE_BUTTON
+			style				WINDOW_STYLE_EMPTY
+			rect				495 444 130 24
+			text				"BACK"
+			font				3
+			textscale			1
+			textalign			ITEM_ALIGN_CENTER
+			textstyle			3
+			textalignx			65
+			forecolor			0.65 0.65 1 1
+			visible				1
+			mouseEnter
+			{
+				show			backButton_glow
+			}
+			mouseExit
+			{
+				hide			backButton_glow
+			}
+			action
+			{
+				play			"sound/interface/button1.wav" ;
+				close			all ;
+				open			ingameMainMenu
 			}
 		}
 	}

@@ -1,0 +1,107 @@
+// ============================================================================
+// CO-OP buttons for the stock main menu and pause menu -- original authorship.
+// Part of the jedi-outcast-coop mod; ships in zz-coop-ui.pk3.
+//
+// The stock menus are retail files that this mod neither ships nor edits, so
+// the engine (UI_CoopAddMenuButtons, ui_main.cpp) adds these items to them
+// after they load: each "addToMenu <menu> { ... }" block is parsed into that
+// menu like the itemDefs of a .menu file.
+// ============================================================================
+
+addToMenu "mainMenu"
+{
+	itemDef
+	{
+		name				coopbutton_glow
+		group				mods
+		style				WINDOW_STYLE_SHADER
+		rect				505 444 130 24
+		background			"gfx/menus/menu_buttonback"
+		forecolor			1 1 1 1
+		visible				0
+		decoration
+	}
+
+	itemDef
+	{
+		name				coopbutton
+		group				othermain
+		text				"CO-OP"
+		descText			"Play the campaign together: online, on your network or split screen"
+		type				ITEM_TYPE_BUTTON
+		style				WINDOW_STYLE_EMPTY
+		rect				505 444 130 24
+		font				3
+		textscale			1
+		textalign			ITEM_ALIGN_CENTER
+		textstyle			3
+		textalignx			65
+		textaligny			-1
+		forecolor			0.65 0.65 1 1
+		visible				1
+
+		mouseEnter
+		{
+			show			coopbutton_glow
+		}
+		mouseExit
+		{
+			hide			coopbutton_glow
+		}
+		action
+		{
+			play			"sound/interface/button1.wav" ;
+			close			all ;
+			open			coopMenu
+		}
+	}
+}
+
+addToMenu "ingameMainMenu"
+{
+	itemDef
+	{
+		name				coopbutton_glow
+		group				mods
+		style				WINDOW_STYLE_SHADER
+		rect				305 444 130 24
+		background			"gfx/menus/menu_buttonback"
+		forecolor			1 1 1 1
+		visible				0
+		decoration
+	}
+
+	itemDef
+	{
+		name				coopbutton
+		group				othermain
+		text				"CO-OP"
+		descText			"Let friends join this game, or add player 2 on this PC"
+		type				ITEM_TYPE_BUTTON
+		style				WINDOW_STYLE_EMPTY
+		rect				305 444 130 24
+		font				3
+		textscale			1
+		textalign			ITEM_ALIGN_CENTER
+		textstyle			3
+		textalignx			65
+		textaligny			-1
+		forecolor			0.65 0.65 1 1
+		visible				1
+
+		mouseEnter
+		{
+			show			coopbutton_glow
+		}
+		mouseExit
+		{
+			hide			coopbutton_glow
+		}
+		action
+		{
+			play			"sound/interface/button1.wav" ;
+			close			all ;
+			open			coopIngameMenu
+		}
+	}
+}

@@ -33,6 +33,11 @@ func BuildCoopUI(srcDir, outPath string) ([]string, error) {
 	if b.Len() == 0 {
 		return nil, fmt.Errorf("no files under %s", uiDir)
 	}
+	// The default controller layout sits at the pak root so `exec
+	// jk2coop_gamepad.cfg` finds it (split screen's player 2 runs it).
+	if cfg := filepath.Join(srcDir, "jk2coop_gamepad.cfg"); fileExists(cfg) {
+		b.Add("jk2coop_gamepad.cfg", cfg)
+	}
 	if err := os.Remove(outPath); err != nil && !os.IsNotExist(err) {
 		return nil, err
 	}
@@ -40,4 +45,9 @@ func BuildCoopUI(srcDir, outPath string) ([]string, error) {
 		return nil, err
 	}
 	return b.ArchivePaths(), nil
+}
+
+func fileExists(p string) bool {
+	fi, err := os.Stat(p)
+	return err == nil && fi.Mode().IsRegular()
 }

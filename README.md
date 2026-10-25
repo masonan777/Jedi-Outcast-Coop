@@ -3,6 +3,19 @@
 A build of Jedi Outcast singleplayer with **cooperative campaign play**
 — up to four players in one campaign game — for **Linux and Windows**.
 
+> **About this fork.** This repository is a fork of
+> [**Benehiko/jedi-outcast-coop**](https://github.com/Benehiko/jedi-outcast-coop),
+> created by **Alano Terblanche ([@Benehiko](https://github.com/Benehiko))**.
+> The co-op engine, the dual-load remote-client design, patches
+> `0001`–`0031`, the `jk2coop` tool, the installers and the documentation
+> below are his work; the full original commit history is preserved here.
+> This fork adds patch `0032` (campaign gameplay fixes for joiners, Force
+> powers and lightsaber for player 2, a revive system, in-game CO-OP menus
+> with one-click split screen, controller support, and an automated level
+> crawl test) plus a Windows test package/installer under `tools/windows/`
+> — see [docs/fork-changes.md](docs/fork-changes.md) for what changed and
+> the [credits](#credits).
+
 ## Status
 
 Working today, verified in a live session: one player **hosts the
@@ -240,6 +253,7 @@ See `jk2coop completion <shell> --help` for per-shell details.
 | [testing.md](docs/testing.md) | Verifying changes headlessly: the single-instance and co-op screenshot harnesses |
 | [tooling.md](docs/tooling.md) | The cross-platform `jk2coop` Go binary: install, launch, host/join, game/graphics settings, uninstall |
 | [ci.md](docs/ci.md) | What the GitHub Actions CI checks, and how to run those checks locally |
+| [fork-changes.md](docs/fork-changes.md) | This fork: what patch `0032` adds (revive, CO-OP menus, split screen, controllers, level crawl bot), the Windows test package, credits |
 | [tasks.md](docs/tasks.md) | **Implementing? Start here.** Status: what's done, what's outstanding, as sitting-sized tasks |
 | [campaign-ui-plan.md](docs/campaign-ui-plan.md) | Track F plan: syncing objectives, mission text, and cutscenes to joiners |
 | [roadmap.md](docs/roadmap.md) | The original plan in phases |
@@ -249,6 +263,21 @@ See `jk2coop completion <shell> --help` for per-shell details.
 | [mp-route.md](docs/mp-route.md) | The superseded MP-tree route, preserved with instructions |
 | [investigation-log.md](docs/investigation-log.md) | Everything tried, measured, and concluded — including the wrong turns |
 | [widen-sp-progress.md](docs/widen-sp-progress.md) / [coop-design.md](docs/coop-design.md) | Historical: early progress log and the superseded original study |
+
+## Credits
+
+- **Alano Terblanche ([@Benehiko](https://github.com/Benehiko))** — original
+  author of [jedi-outcast-coop](https://github.com/Benehiko/jedi-outcast-coop),
+  which this fork is built on: the co-op engine changes, dual-load remote
+  client, Co-op menu, installers, `jk2coop` tool and docs.
+- **Andrew ([@masonan777](https://github.com/masonan777))** — this fork:
+  patch `0032`, the Windows split-screen launcher, level crawl test and
+  test-package installer ([docs/fork-changes.md](docs/fork-changes.md)).
+- [**JACoop**](https://github.com/Parricidium/JACoop) by Parricidium — a
+  Jedi Academy co-op mod built on the same dual-load design; used as a
+  reference for several joiner fixes.
+- [**OpenJK**](https://github.com/JACoders/OpenJK) (JACoders) and **Raven
+  Software**, who released the Jedi Outcast source under the GPLv2.
 
 ## Approach
 
