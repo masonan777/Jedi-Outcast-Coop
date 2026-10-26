@@ -35,6 +35,18 @@
     .\jk2coop-levelcrawl.ps1 -SelfTest                         # check the scorer can fail (no game started)
 .EXAMPLE
     .\jk2coop-levelcrawl.ps1 -Maps kejim_post -TwinKillJoiner  # check the whole harness can fail
+.EXAMPLE
+    .\jk2coop-levelcrawl.ps1 -GapTest                         # co-op feature tests (kejim_post, ns_starpad)
+.EXAMPLE
+    .\jk2coop-levelcrawl.ps1 -GapTest -Twin obj               # break objective sync on purpose: must be caught
+
+    -GapTest runs the co-op feature test bot instead of the level tour: once
+    player 2 is in, the host's game switches each co-op feature on directly
+    (objectives, a cutscene camera, the snapshot viewpoint, security camera /
+    NPC / gun-turret views, the AT-ST, friend-or-foe colours, the pistol charge
+    glow, the animation clock after a menu, downed/revive) and player 2's game
+    checks what it got. Every test prints PASS, FAIL or SKIP (the level
+    doesn't have that thing).
 #>
 [CmdletBinding()]
 param(
@@ -60,8 +72,13 @@ param(
     # only test the scorer with made-up logs, start no game
     [switch]$SelfTest,
     # deliberately kill the joiner on the first map: that map MUST come out FAIL
-    [switch]$TwinKillJoiner
+    [switch]$TwinKillJoiner,
+    # run the co-op feature tests on each map instead of touring it
+    [switch]$GapTest,
+    # with -GapTest: break this one feature on purpose (e.g. obj); its test MUST fail
+    [string]$Twin = ''
 )
+if ($GapTest -and -not $PSBoundParameters.ContainsKey('Maps')) { $Maps = @('kejim_post', 'ns_starpad') }
 
 $ErrorActionPreference = 'Stop'
 
@@ -127,6 +144,29 @@ function Get-CrawlVerdicts {
     return $verdicts
 }
 
+function Get-GapVerdicts {
+    # co-op feature tests: a test passes when player 2 reported at least one PASS
+    # for it and nothing (player 2 or the host's own checks) reported a FAIL
+    param([string[]]$HostLines, [string[]]$P2Lines)
+    $out = @()
+    foreach ($start in @($HostLines | Where-Object { $_ -match '^GT START map=(\S+) test=(\S+)' })) {
+        $null = $start -match '^GT START map=(\S+) test=(\S+)'
+        $map = $Matches[1]; $test = $Matches[2]
+        $key = "map=$([regex]::Escape($map)) test=$([regex]::Escape($test)) "
+        $skip = $HostLines | Where-Object { $_ -match "^GT SKIP $key" } | Select-Object -First 1
+        $hostRes = @($HostLines | Where-Object { $_ -match "^GT HOST $key" })
+        $p2Res = @($P2Lines | Where-Object { $_ -match "^P2 GT $key" })
+        $fails = @(($hostRes + $p2Res) | Where-Object { $_ -match ($key + 'FAIL') })
+        $passes = @($p2Res | Where-Object { $_ -match ($key + 'PASS') })
+        if ($skip) { $v = 'SKIP'; $why = ($skip -replace '^GT SKIP map=\S+ test=\S+ ', '') }
+        elseif ($fails.Count) { $v = 'FAIL'; $why = (($fails | ForEach-Object { $_ -replace '^(GT HOST|P2 GT) map=\S+ test=\S+ FAIL ', '' }) -join ' | ') }
+        elseif ($passes.Count) { $v = 'PASS'; $why = ((@($p2Res) + @($hostRes) | ForEach-Object { $_ -replace '^(GT HOST|P2 GT) map=\S+ test=\S+ PASS ', '' }) -join ' | ') }
+        else { $v = 'FAIL'; $why = 'player 2 never reported (test not received, or its game stopped)' }
+        $out += [pscustomobject]@{ Map = $map; Test = $test; Verdict = $v; Detail = $why }
+    }
+    return $out
+}
+
 function Invoke-ScorerSelfTest {
     # Feed the real scorer known-good and known-bad logs; every case must come out as expected.
     $maps = @('m_good', 'm_hollow', 'm_p2crash', 'm_missing', 'm_hostcrash', 'm_wrongmap', 'm_noload')
@@ -153,6 +193,18 @@ function Invoke-ScorerSelfTest {
         $want = $expect[$v.Map]
         $mark = if ($v.Verdict -eq $want) { 'ok  ' } else { $ok = $false; 'BAD ' }
         Write-Host ("{0} {1,-12} expected {2,-7} got {3,-7} {4}" -f $mark, $v.Map, $want, $v.Verdict, $v.Detail)
+    }
+    # co-op feature test scorer
+    $gHost = @('GT START map=m test=t_pass joiner=1', 'GT START map=m test=t_p2fail joiner=1', 'GT START map=m test=t_hostfail joiner=1',
+        'GT START map=m test=t_silent joiner=1', 'GT START map=m test=t_skip joiner=1', 'GT SKIP map=m test=t_skip reason=not_on_this_map',
+        'GT HOST map=m test=t_hostfail FAIL joiner_is_viewer=0', 'GT HOST map=m test=t_pass PASS ok')
+    $gP2 = @('P2 GT map=m test=t_pass PASS ok', 'P2 GT map=m test=t_p2fail PASS first', 'P2 GT map=m test=t_p2fail FAIL second',
+        'P2 GT map=m test=t_hostfail PASS ok')
+    $gExpect = @{ t_pass = 'PASS'; t_p2fail = 'FAIL'; t_hostfail = 'FAIL'; t_silent = 'FAIL'; t_skip = 'SKIP' }
+    foreach ($v in (Get-GapVerdicts -HostLines $gHost -P2Lines $gP2)) {
+        $want = $gExpect[$v.Test]
+        $mark = if ($v.Verdict -eq $want) { 'ok  ' } else { $ok = $false; 'BAD ' }
+        Write-Host ("{0} {1,-12} expected {2,-7} got {3,-7} {4}" -f $mark, $v.Test, $want, $v.Verdict, $v.Detail)
     }
     if ($ok) { Write-Host 'SELFTEST OK' } else { Write-Host 'SELFTEST FAILED' }
     return $ok
@@ -215,6 +267,8 @@ function Start-CrawlHost([int]$idx) {
         " +set coop_crawl 1 +set coop_crawl_index $idx" +
         " +set g_skipIntroCinematics 1 +set g_skipVideos 1" +
         " +set coop_crawl_dwell $Dwell +set coop_crawl_jointimeout $JoinTimeout +set coop_crawl_log `"$hostLog`""
+    if ($GapTest) { $argLine += ' +set coop_gaptest 1' }
+    if ($Twin) { $argLine += " +set coop_test_twin $Twin" }
     if (($Maps -join ' ') -ne $DefaultMapList) { $argLine += " +set coop_crawl_maps `"$($Maps -join ' ')`"" }
     $argLine += " +map $($Maps[$idx])"
     Write-Host "[crawl] starting host at map $idx ($($Maps[$idx]))"
@@ -391,7 +445,29 @@ if ($newDumps.Count) { $lines += ''; $lines += 'New crash dumps:'; $lines += ($n
 
 $passed = @($verdicts | Where-Object { $_.Verdict -eq 'PASS' }).Count
 $total = $verdicts.Count
-if ($TwinKillJoiner) {
+$gap = @()
+if ($GapTest) {
+    $gap = @(Get-GapVerdicts -HostLines (Read-Lines $hostLog) -P2Lines (Read-Lines $p2Log))
+    $lines += ''
+    $lines += 'Co-op feature tests:'
+    foreach ($g in $gap) { $lines += ("{0,-6} {1,-12} {2,-10} {3}" -f $g.Verdict, $g.Map, $g.Test, $g.Detail) }
+}
+$gapFailed = @($gap | Where-Object { $_.Verdict -eq 'FAIL' }).Count
+$gapPassed = @($gap | Where-Object { $_.Verdict -eq 'PASS' }).Count
+$gapSkipped = @($gap | Where-Object { $_.Verdict -eq 'SKIP' }).Count
+if ($Twin) {
+    $caught = (@($gap | Where-Object { $_.Test -eq $Twin -and $_.Verdict -eq 'FAIL' }).Count -gt 0)
+    $lines += ''
+    $lines += ("TWIN: '{0}' broken on purpose -> {1}" -f $Twin, $(if ($caught) { 'its test FAILED: caught, the test can fail' } else { 'its test did NOT fail: the test is broken' }))
+    $final = $(if ($caught) { 'RESULT: PASS (twin caught)' } else { 'RESULT: FAIL (twin not caught)' })
+}
+elseif ($GapTest) {
+    if ($passed -eq $total -and $gapFailed -eq 0 -and $gapPassed -gt 0 -and $newDumps.Count -eq 0) {
+        $final = "RESULT: PASS ($gapPassed tests passed, $gapSkipped skipped; $passed/$total maps)"
+    }
+    else { $final = "RESULT: FAIL ($gapFailed tests failed, $gapPassed passed; $passed/$total maps)" }
+}
+elseif ($TwinKillJoiner) {
     $twin = $verdicts[0]
     $caught = ($twin.Verdict -ne 'PASS')
     $lines += ''

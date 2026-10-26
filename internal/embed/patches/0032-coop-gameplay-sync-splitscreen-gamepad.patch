@@ -1,5 +1,5 @@
 diff --git a/code/client/cl_cgame.cpp b/code/client/cl_cgame.cpp
-index ff28061..e75295e 100644
+index ff28061..73b1842 100644
 --- a/code/client/cl_cgame.cpp
 +++ b/code/client/cl_cgame.cpp
 @@ -123,16 +123,18 @@ static int CL_CG_Stub_EntitiesInBox( const vec3_t mins, const vec3_t maxs, genti
@@ -26,6 +26,19 @@ index ff28061..e75295e 100644
  static void CL_CG_Stub_SetBrushModel( gentity_t *ent, const char *name ) { CL_CG_STUB_WARN(SetBrushModel); }
  static qboolean CL_CG_Stub_inPVS( const vec3_t p1, const vec3_t p2 ) { CL_CG_STUB_WARN(inPVS); return qtrue; }
  static qboolean CL_CG_Stub_inPVSIgnorePortals( const vec3_t p1, const vec3_t p2 ) { CL_CG_STUB_WARN(inPVSIgnorePortals); return qtrue; }
+@@ -1812,6 +1814,12 @@ void CL_CGameRendering( stereoFrame_t stereo ) {
+ 	{
+ 		timei-=0;
+ 	}
++	if ( !com_sv_running->integer )
++	{// jk2coop round 32: a joiner has no server clock; if anything set one (the
++	 // UI does while a full-screen menu is open) Ghoul2 would keep using that
++	 // stale time and every animation would freeze. Clear it every frame.
++		re.G2API_SetTime(0,G2T_SV_TIME);
++	}
+ 	re.G2API_SetTime(cl.serverTime,G2T_CG_TIME);
+ 	VM_Call( CG_DRAW_ACTIVE_FRAME,timei, stereo, qfalse );
+ //	VM_Debug( 0 );
 diff --git a/code/client/cl_input.cpp b/code/client/cl_input.cpp
 index 9405176..e4cc3b5 100644
 --- a/code/client/cl_input.cpp
@@ -515,11 +528,61 @@ index d748859..dfc0699 100644
  		// the moves can be processed normaly
  	}
  
+diff --git a/code/server/sv_snapshot.cpp b/code/server/sv_snapshot.cpp
+index 88f2691..b5796d2 100644
+--- a/code/server/sv_snapshot.cpp
++++ b/code/server/sv_snapshot.cpp
+@@ -307,7 +307,7 @@ qboolean SV_PlayerCanSeeEnt( gentity_t *ent, int sightLevel )
+ 	{
+ 		return qfalse;
+ 	}
+-	if ( VM_Call( CG_CAMERA_POS, viewOrg))
++	if ( VM_Call( CG_CAMERA_POS, viewOrg, (intptr_t)0 ))
+ 	{
+ 		if ( VM_Call( CG_CAMERA_ANG, viewAngles))
+ 		{
+@@ -564,7 +564,17 @@ static clientSnapshot_t *SV_BuildClientSnapshot( client_t *client ) {
+ 	// find the client's viewpoint
+ 
+ 	//if in camera mode use camera position instead
+-	if ( VM_Call( CG_CAMERA_POS, org))
++	// jk2coop round 31: CG_CAMERA_POS answers from the HOST's own view (its
++	// cutscene camera, remote view, third person camera). Every joiner's
++	// snapshot was built from there too, so a joiner away from the host lost
++	// entities and parts of the level whenever the host used the saber or
++	// third person. Joiners now ask for their own viewpoint: the host's
++	// cutscene camera while one runs (they watch it), their own remote view,
++	// else their own eyes (below).
++	const int coopClientNum = (int)( client - svs.clients );
++	if ( coopClientNum > 0
++		? VM_Call( CG_CAMERA_POS, org, (intptr_t)( 0x4A4B0000 | coopClientNum ) )
++		: VM_Call( CG_CAMERA_POS, org, (intptr_t)0 ) )
+ 	{
+ 		//org[2] += clent->client->viewheight;
+ 	}
 diff --git a/code/ui/ui_main.cpp b/code/ui/ui_main.cpp
-index b78ed79..618a042 100644
+index b78ed79..6d95a13 100644
 --- a/code/ui/ui_main.cpp
 +++ b/code/ui/ui_main.cpp
-@@ -1595,6 +1595,20 @@ static qboolean UI_RunMenuScript ( const char **args )
+@@ -502,7 +502,16 @@ void _UI_Refresh( int realtime )
+ 	extern void SE_CheckForLanguageUpdates(void);
+ 	SE_CheckForLanguageUpdates();
+ 
+-	if ( Menus_AnyFullScreenVisible() )
++	// jk2coop round 32: not on a co-op joiner that is in a game. A joiner has no
++	// local server, so nothing ever puts the Ghoul2 "server clock" back after
++	// this: opening any full-screen menu there (datapad, pause menu) left it
++	// at the menu's time, and from then on every animation on the joiner's
++	// screen froze on its first frame (G2API_SetTime falls back to that clock)
++	// -- characters sliding around, enemies dying standing up.
++	const qboolean coopJoinerInGame = (qboolean)( Cvar_VariableIntegerValue( "cg_remoteClient" )
++		&& !Cvar_VariableIntegerValue( "sv_running" )
++		&& Cvar_VariableIntegerValue( "cl_running" ) );
++	if ( Menus_AnyFullScreenVisible() && !coopJoinerInGame )
+ 	{//if not in full screen, don't mess with ghoul2
+ 		//rww - ghoul2 needs to know what time it is even if the client/server are not running
+ 		//FIXME: this screws up the game when you go back to the game...
+@@ -1595,6 +1604,20 @@ static qboolean UI_RunMenuScript ( const char **args )
  			const int mp = (int)trap_Cvar_VariableValue( "ui_coopMaxPlayers" );
  			ui.Cmd_ExecuteText( EXEC_APPEND, va( "coop_host %i\n", mp > 0 ? mp : 2 ) );
  		}
@@ -540,7 +603,7 @@ index b78ed79..618a042 100644
  		else if ( Q_stricmp( name, "coopRefresh" ) == 0 )
  		{
  			// Rescan the LAN for co-op hosts (D2). The feeder reads cls.localServers.
-@@ -2968,6 +2982,70 @@ qboolean Load_Menu(const char **holdBuffer)
+@@ -2968,6 +2991,70 @@ qboolean Load_Menu(const char **holdBuffer)
  	return qfalse;
  }
  
@@ -611,7 +674,7 @@ index b78ed79..618a042 100644
  /*
  =================
  UI_LoadMenus
-@@ -3043,6 +3121,8 @@ void UI_LoadMenus(const char *menuFile, qboolean reset)
+@@ -3043,6 +3130,8 @@ void UI_LoadMenus(const char *menuFile, qboolean reset)
  	}
  	COM_EndParseSession();
  
@@ -706,8 +769,71 @@ index f195637..f43e215 100644
  
  	if ( dif < 75 )
  	{
+diff --git a/codeJK2/cgame/cg_camera.cpp b/codeJK2/cgame/cg_camera.cpp
+index a250208..8df39c1 100644
+--- a/codeJK2/cgame/cg_camera.cpp
++++ b/codeJK2/cgame/cg_camera.cpp
+@@ -136,6 +136,7 @@ CGCam_Disable
+ void CGCam_Disable( void )
+ {
+ 	in_camera = false;
++	g_coopCamView.valid = qfalse;	// jk2coop round 31
+ 
+ 	client_camera.bar_alpha = 1.0f;
+ 	client_camera.bar_time = cg.time;
+@@ -1077,10 +1078,12 @@ void CGCam_Update( void )
+ 			actualFOV_X = client_camera.FOV + (( ( client_camera.FOV2 - client_camera.FOV ) ) / client_camera.FOV_duration ) * ( cg.time - client_camera.FOV_time );
+ 		}
+ 		CG_CalcFOVFromX( actualFOV_X );
++		g_coopCamView.fov = actualFOV_X;	// jk2coop round 31
+ 	}
+ 	else
+ 	{
+ 		CG_CalcFOVFromX( client_camera.FOV );
++		g_coopCamView.fov = client_camera.FOV;	// jk2coop round 31
+ 	}
+ 
+ 	//Check for roffing angles
+@@ -1174,6 +1177,14 @@ void CGCam_Update( void )
+ 	//Update shaking if there's any
+ 	//CGCam_UpdateSmooth( cg.refdef.vieworg, cg.refdefViewAngles );
+ 	CGCam_UpdateShake( cg.refdef.vieworg, cg.refdefViewAngles );
++
++	// jk2coop round 31: the shot the host sees, for the joiners (G_CoopCutsceneSync)
++	if ( !cg_remoteClient )
++	{
++		VectorCopy( cg.refdef.vieworg, g_coopCamView.origin );
++		VectorCopy( cg.refdefViewAngles, g_coopCamView.angles );
++		g_coopCamView.valid = qtrue;
++	}
+ }
+ 
+ /*
+diff --git a/codeJK2/cgame/cg_camera.h b/codeJK2/cgame/cg_camera.h
+index d3772ab..3577a93 100644
+--- a/codeJK2/cgame/cg_camera.h
++++ b/codeJK2/cgame/cg_camera.h
+@@ -132,6 +132,18 @@ typedef struct camera_s
+ extern	bool		in_camera;
+ extern	camera_t	client_camera;
+ 
++// jk2coop round 31: the host's cutscene view after CGCam_Update (origin, angles,
++// the FOV before aspect correction), sent to joiners by G_CoopCutsceneSync
++// (g_main.cpp)
++typedef struct
++{
++	qboolean	valid;
++	vec3_t		origin;
++	vec3_t		angles;
++	float		fov;
++} coopCamView_t;
++extern coopCamView_t	g_coopCamView;
++
+ void CGCam_Init( void );
+ 
+ void CGCam_Enable( void );
 diff --git a/codeJK2/cgame/cg_draw.cpp b/codeJK2/cgame/cg_draw.cpp
-index a35ca0f..55dcbee 100644
+index a35ca0f..05df1ec 100644
 --- a/codeJK2/cgame/cg_draw.cpp
 +++ b/codeJK2/cgame/cg_draw.cpp
 @@ -376,7 +376,9 @@ static void CG_DrawAmmo(centity_t	*cent,int x,int y)
@@ -721,7 +847,127 @@ index a35ca0f..55dcbee 100644
  		{
  		case 1://FORCE_LEVEL_1:
  		case 5://FORCE_LEVEL_5://Tavion
-@@ -2272,6 +2274,53 @@ CG_Draw2D
+@@ -668,7 +670,12 @@ static qboolean CG_DrawCustomHealthHud( centity_t *cent )
+ 		CG_DrawPic( 14, 480 - 50, 94, 32, cgs.media.whiteShader );
+ 
+ 		// we just calc the display value from the sum of health and armor
+-		if ( g_entities[cg.snap->ps.viewEntity].activator ) // ensure we can look back to the atst_drivable to get the max health
++		if ( cg_remoteClient )
++		{// jk2coop round 31: our copy of the driver has no health; the AT-ST's is in our armor stat
++			health = ( cg.snap->ps.stats[STAT_HEALTH] + cg.snap->ps.stats[STAT_ARMOR] ) /
++				(float)( ( cg.snap->ps.stats[STAT_MAX_HEALTH] > 0 ? cg.snap->ps.stats[STAT_MAX_HEALTH] : 100 ) + 800 );
++		}
++		else if ( g_entities[cg.snap->ps.viewEntity].activator ) // ensure we can look back to the atst_drivable to get the max health
+ 		{
+ 			health = ( g_entities[cg.snap->ps.viewEntity].health + g_entities[cg.snap->ps.viewEntity].client->ps.stats[STAT_ARMOR] ) /
+ 				(float)(g_entities[cg.snap->ps.viewEntity].max_health + g_entities[cg.snap->ps.viewEntity].activator->max_health );
+@@ -1361,6 +1368,30 @@ static void CG_DrawCrosshair( vec3_t worldPoint )
+ 	{
+ 		gentity_t *crossEnt = &g_entities[g_crosshairEntNum];
+ 
++		if ( cg_remoteClient )
++		{// jk2coop round 33: our copies of characters and turrets have no team;
++		 // the host sends it with the entity (G_CoopForceFxSync, g_main.cpp)
++			const int pw = cg_entities[g_crosshairEntNum].currentState.powerups;
++			const int team = ( ( pw & COOP_PWB_TEAM_MASK ) >> COOP_PWB_TEAM_SHIFT ) - 1;
++			if ( crossEnt->client )
++			{
++				crossEnt->client->playerTeam = ( team >= 0 && team < TEAM_NUM_TEAMS ) ? (team_t)team : TEAM_FREE;
++			}
++			else
++			{
++				crossEnt->noDamageTeam = ( team >= 0 && team < TEAM_NUM_TEAMS ) ? (team_t)team : TEAM_FREE;
++				if ( pw & ( 1 << COOP_PWB_NONNPC_ENEMY ) )
++				{
++					crossEnt->svFlags |= SVF_NONNPC_ENEMY;
++				}
++				else
++				{
++					crossEnt->svFlags &= ~SVF_NONNPC_ENEMY;
++				}
++				crossEnt->s.weapon = cg_entities[g_crosshairEntNum].currentState.weapon;
++			}
++		}
++
+ 		if ( crossEnt->client )
+ 		{
+ 			if ( crossEnt->client->ps.powerups[PW_CLOAKED] )
+@@ -1684,6 +1715,59 @@ static void CG_ScanForRocketLock( void )
+ 	}
+ }
+ 
++/*
++=================
++jk2coop round 33 (joiner only): the crosshair trace. A joiner's gi.trace only
++knows the level's brushes, so it hits the wall behind a character and the
++crosshair never identified anyone. Same trace against the level, plus the
++boxes of the characters/doors/turrets in this snapshot (like cgame's own
++prediction trace, but from the networked entity state: our gentity copies
++have no solid size).
++=================
++*/
++void CG_CoopCrosshairTrace( trace_t *tr, const vec3_t start, const vec3_t end, int skipNum, int mask )
++{
++	vec3_t	nullv = { 0, 0, 0 };
++	cgi_CM_BoxTrace( tr, start, end, nullv, nullv, 0, mask );
++	tr->entityNum = ( tr->fraction != 1.0f ) ? ENTITYNUM_WORLD : ENTITYNUM_NONE;
++	for ( int k = 0; k < cg.snap->numEntities; k++ )
++	{
++		const entityState_t *es = &cg.snap->entities[k];
++		if ( es->number == skipNum || es->number >= ENTITYNUM_WORLD || !es->solid )
++		{
++			continue;
++		}
++		centity_t		*cent = &cg_entities[es->number];
++		clipHandle_t	cmodel;
++		vec3_t			angles;
++		if ( es->solid == SOLID_BMODEL )
++		{
++			cmodel = cgi_CM_InlineModel( es->modelindex );
++			VectorCopy( cent->lerpAngles, angles );
++		}
++		else
++		{
++			const int x = ( es->solid & 255 );
++			const int zd = ( ( es->solid >> 8 ) & 255 );
++			const int zu = ( ( es->solid >> 16 ) & 255 ) - 32;
++			vec3_t bmins, bmaxs;
++			bmins[0] = bmins[1] = -x;
++			bmaxs[0] = bmaxs[1] = x;
++			bmins[2] = -zd;
++			bmaxs[2] = zu;
++			cmodel = cgi_CM_TempBoxModel( bmins, bmaxs );
++			VectorClear( angles );
++		}
++		trace_t t;
++		cgi_CM_TransformedBoxTrace( &t, start, end, nullv, nullv, cmodel, mask, cent->lerpOrigin, angles );
++		if ( t.fraction < tr->fraction )
++		{
++			t.entityNum = es->number;
++			*tr = t;
++		}
++	}
++}
++
+ /*
+ =================
+ CG_ScanForCrosshairEntity
+@@ -1842,6 +1926,14 @@ static void CG_ScanForCrosshairEntity( qboolean scanAll )
+ 			//FIXME: increase this?  Increase when zoom in?
+ 			VectorMA( start, 4096, cg.refdef.viewaxis[0], end );//was 8192
+ 		}
++		if ( cg_remoteClient )
++		{// jk2coop round 33: gi.trace on a joiner only sees the level's brushes (no
++		 // server entities), so the crosshair never landed on anyone and never
++		 // turned red/green. Trace the characters / turrets in our snapshot too.
++			CG_CoopCrosshairTrace( &trace, start, end, cg.snap->ps.viewEntity > 0 && cg.snap->ps.viewEntity < ENTITYNUM_WORLD ? cg.snap->ps.viewEntity : cg.snap->ps.clientNum,
++				MASK_OPAQUE|CONTENTS_SHOTCLIP|CONTENTS_BODY|CONTENTS_ITEM );
++		}
++		else
+ 		//YES!  This is very very bad... but it works!  James made me do it.  Really, he did.  Blame James.
+ 		gi.trace( &trace, start, vec3_origin, vec3_origin, end,
+ 			ignoreEnt, MASK_OPAQUE|CONTENTS_SHOTCLIP|CONTENTS_BODY|CONTENTS_ITEM, G2_NOCOLLIDE, 10 );// ); took out CONTENTS_SOLID| so you can target people through glass.... took out CONTENTS_CORPSE so disintegrated guys aren't shown, could just remove their body earlier too...
+@@ -2272,6 +2364,53 @@ CG_Draw2D
  =================
  */
  extern void CG_SaberClashFlare( void );
@@ -775,7 +1021,7 @@ index a35ca0f..55dcbee 100644
  static void CG_Draw2D( void )
  {
  	char	text[1024]={0};
-@@ -2334,7 +2383,7 @@ static void CG_Draw2D( void )
+@@ -2334,7 +2473,7 @@ static void CG_Draw2D( void )
  	// don't draw any status if dead
  	if ( cg.snap->ps.stats[STAT_HEALTH] > 0 )
  	{
@@ -784,7 +1030,7 @@ index a35ca0f..55dcbee 100644
  		{
  			CG_DrawIconBackground();
  		}
-@@ -2365,6 +2414,7 @@ static void CG_Draw2D( void )
+@@ -2365,6 +2504,7 @@ static void CG_Draw2D( void )
  		CG_DrawPickupItem();
  	}
  	CG_SaberClashFlare();
@@ -793,7 +1039,7 @@ index a35ca0f..55dcbee 100644
  	float y = 0;
  	if (cg_drawSnapshot.integer) {
 diff --git a/codeJK2/cgame/cg_ents.cpp b/codeJK2/cgame/cg_ents.cpp
-index bad8c73..be635f8 100644
+index bad8c73..b859e6f 100644
 --- a/codeJK2/cgame/cg_ents.cpp
 +++ b/codeJK2/cgame/cg_ents.cpp
 @@ -33,6 +33,7 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
@@ -985,7 +1231,19 @@ index bad8c73..be635f8 100644
  	if ( cg_simpleItems.integer )
  	{
  		memset( &ent, 0, sizeof( ent ) );
-@@ -1033,7 +1120,15 @@ static void CG_Missile( centity_t *cent ) {
+@@ -950,7 +1037,10 @@ Ghoul2 Insert End
+ 	vec3_t spinAngles;
+ 
+ 	//AxisClear( ent.axis );
+-	VectorCopy( cent->gent->s.angles, spinAngles );
++	// jk2coop round 31: our copy of a dropped item has no angles (the host
++	// lays dropped weapons on their side); use the networked ones. Upright
++	// weapons stood on their grip point and looked like they were floating.
++	VectorCopy( cg_remoteClient ? es->angles : cent->gent->s.angles, spinAngles );
+ 
+ 	ent.hModel = cg_items[es->modelindex].models;
+ /*
+@@ -1033,7 +1123,15 @@ static void CG_Missile( centity_t *cent ) {
  	const weaponInfo_t	*weapon;
  	const weaponData_t  *wData;
  
@@ -1002,7 +1260,7 @@ index bad8c73..be635f8 100644
  		return;
  
  	s1 = &cent->currentState;
-@@ -1049,7 +1144,14 @@ static void CG_Missile( centity_t *cent ) {
+@@ -1049,7 +1147,14 @@ static void CG_Missile( centity_t *cent ) {
  		VectorCopy( s1->angles, cent->lerpAngles );
  	}
  
@@ -1018,7 +1276,7 @@ index bad8c73..be635f8 100644
  	{
  		// add trails
  		if ( weapon->alt_missileTrailFunc )
-@@ -1105,7 +1207,7 @@ Ghoul2 Insert End
+@@ -1105,7 +1210,7 @@ Ghoul2 Insert End
  	ent.skinNum = cg.clientFrame & 1;
  	ent.renderfx = /*weapon->missileRenderfx | */RF_NOSHADOW;
  
@@ -1027,7 +1285,7 @@ index bad8c73..be635f8 100644
  		ent.hModel = weapon->alt_missileModel;
  	else
  		ent.hModel = weapon->missileModel;
-@@ -2067,6 +2169,209 @@ static void CG_Clouds( centity_t *cent )
+@@ -2067,6 +2172,209 @@ static void CG_Clouds( centity_t *cent )
  	cgi_R_AddRefEntityToScene( &ent );
  }
  
@@ -1237,7 +1495,7 @@ index bad8c73..be635f8 100644
  /*
  ===============
  CG_AddCEntity
-@@ -2086,6 +2391,9 @@ static void CG_AddCEntity( centity_t *cent )
+@@ -2086,6 +2394,9 @@ static void CG_AddCEntity( centity_t *cent )
  		return;
  	}
  
@@ -1537,6 +1795,43 @@ index cf050a3..7f69fa5 100644
  	default:
  		DEBUGNAME("UNKNOWN");
  		CG_Error( "Unknown event: %i", event );
+diff --git a/codeJK2/cgame/cg_info.cpp b/codeJK2/cgame/cg_info.cpp
+index bdb7269..60018db 100644
+--- a/codeJK2/cgame/cg_info.cpp
++++ b/codeJK2/cgame/cg_info.cpp
+@@ -200,9 +200,14 @@ static void MissionPrint_Line(const int color, const int objectIndex, int &missi
+ MissionInformation_Draw
+ ====================
+ */
++extern objectives_t	g_coopObjectives[MAX_MISSION_OBJ];	// cg_view.cpp
+ void MissionInformation_Draw( centity_t *cent )
+ {
+ 	int		i,totalY;
++	// jk2coop round 31: on a joiner our copy of the player has no session data;
++	// the host sends its objectives (CS_COOP_STATE, cg_view.cpp)
++	const objectives_t *objs = cg_remoteClient ? g_coopObjectives
++		: ( ( cent && cent->gent && cent->gent->client ) ? cent->gent->client->sess.mission_objectives : NULL );
+ 	int iYPixelsPerLine = cgi_R_Font_HeightPixels(cgs.media.qhFontMedium, 1.0f) * (cgi_Language_IsAsian() ? 1.2f : 1.0f );
+ 
+ 	missionInfo_Updated = qfalse;		// This will stop the text from flashing
+@@ -221,7 +226,7 @@ void MissionInformation_Draw( centity_t *cent )
+ 	cgi_R_SetColor(colorTable[CT_BLUE3]);
+ 	for (i=0;i<MAX_OBJECTIVES;++i)
+ 	{
+-		if (cent->gent->client->sess.mission_objectives[i].display)
++		if (objs && objs[i].display)
+ 		{
+ 			totalY = missionYpos + (iYPixelsPerLine * (missionYcnt))+(iYPixelsPerLine/2);
+ 			if (obj_graphics[0])
+@@ -243,7 +248,7 @@ void MissionInformation_Draw( centity_t *cent )
+ 
+ 			//	OBJECTIVE_STAT_PENDING
+ 			CG_DrawPic( 88,   totalY,   16,  16, cgs.media.messageObjCircle);	// Circle in front
+-			if (cent->gent->client->sess.mission_objectives[i].status == OBJECTIVE_STAT_SUCCEEDED)
++			if (objs[i].status == OBJECTIVE_STAT_SUCCEEDED)
+ 			{
+ 				CG_DrawPic( 88,   totalY,   16,  16, cgs.media.messageLitOn);	// Center Dot
+ 			}
 diff --git a/codeJK2/cgame/cg_local.h b/codeJK2/cgame/cg_local.h
 index 1e8a6c2..55e2418 100644
 --- a/codeJK2/cgame/cg_local.h
@@ -1555,20 +1850,77 @@ index 1e8a6c2..55e2418 100644
  extern	weaponInfo_t	cg_weapons[MAX_WEAPONS];
  extern	itemInfo_t		cg_items[MAX_ITEMS];
 diff --git a/codeJK2/cgame/cg_main.cpp b/codeJK2/cgame/cg_main.cpp
-index b17565d..4d45f01 100644
+index b17565d..e3fa511 100644
 --- a/codeJK2/cgame/cg_main.cpp
 +++ b/codeJK2/cgame/cg_main.cpp
-@@ -1759,6 +1759,9 @@ Called after every level change or subsystem restart
+@@ -42,7 +42,7 @@ extern void CG_DrawDataPadInventorySelect( void );
+ void CG_Init( int serverCommandSequence );
+ qboolean CG_ConsoleCommand( void );
+ void CG_Shutdown( void );
+-int CG_GetCameraPos( vec3_t camerapos );
++int CG_GetCameraPos( vec3_t camerapos, intptr_t coopArg = 0 );
+ void UseItem(int itemNum);
+ const char *CG_DisplayBoxedText(int iBoxX, int iBoxY, int iBoxWidth, int iBoxHeight,
+ 								const char *psText, int iFontHandle, float fScale,
+@@ -121,7 +121,7 @@ extern "C" Q_EXPORT intptr_t vmMain( int command, intptr_t arg0, intptr_t arg1,
+ 	case CG_CROSSHAIR_PLAYER:
+ 		return CG_CrosshairPlayer();
+ 	case CG_CAMERA_POS:
+-		return CG_GetCameraPos( (float*)arg0);
++		return CG_GetCameraPos( (float*)arg0, arg1 );
+ /*
+ Ghoul2 Insert Start
+ */
+@@ -495,7 +495,34 @@ int CG_CrosshairPlayer( void )
+ }
+ 
+ 
+-int CG_GetCameraPos( vec3_t camerapos ) {
++int CG_GetCameraPos( vec3_t camerapos, intptr_t coopArg ) {
++	// jk2coop round 31: the server building a JOINER's snapshot (sv_snapshot.cpp
++	// passes 0x4A4B0000 | its client number). Joiners see the host's cutscene
++	// from its camera, and their own remote view; otherwise 0 = the server uses
++	// the joiner's own eyes. Everything below is the host's own view.
++	if ( ( coopArg & 0xffffff00 ) == 0x4A4B0000 )
++	{
++		const int cn = (int)( coopArg & 0xff );
++		if ( in_camera )
++		{
++			VectorCopy( client_camera.origin, camerapos );
++			return 1;
++		}
++		if ( cn > 0 && cn < MAX_CLIENTS && g_entities[cn].client )
++		{
++			const int ve = g_entities[cn].client->ps.viewEntity;
++			if ( ve > 0 && ve < ENTITYNUM_WORLD && g_entities[ve].inuse )
++			{
++				VectorCopy( g_entities[ve].currentOrigin, camerapos );
++				if ( g_entities[ve].client )
++				{
++					camerapos[2] += g_entities[ve].client->ps.viewheight;
++				}
++				return 1;
++			}
++		}
++		return 0;
++	}
+ 	if ( in_camera) {
+ 		VectorCopy(client_camera.origin, camerapos);
+ 		return 1;
+@@ -1759,6 +1786,12 @@ Called after every level change or subsystem restart
  void CG_Init( int serverCommandSequence ) {
  	cgs.serverCommandSequence = serverCommandSequence;
  
 +	// jk2coop: forget which entity slot held what (joiner placeholder upkeep, cg_ents.cpp)
 +	CG_RemoteSlotReset();
++	// jk2coop round 31: joiner's copy of the campaign state / host cutscene (cg_view.cpp)
++	extern void CG_CoopRemoteReset( void );
++	CG_CoopRemoteReset();
 +
  	cgi_Cvar_Set( "cg_drawHUD", "1" );
  
  	// fonts...
-@@ -1819,8 +1822,10 @@ CG_Shutdown
+@@ -1819,8 +1852,10 @@ CG_Shutdown
  Called before every level change or subsystem restart
  =================
  */
@@ -1579,7 +1931,7 @@ index b17565d..4d45f01 100644
  	in_camera = false;
  	FX_Free();
  }
-@@ -3251,12 +3256,17 @@ ForcePower_Valid
+@@ -3251,12 +3286,17 @@ ForcePower_Valid
  */
  qboolean ForcePower_Valid(int index)
  {
@@ -2401,11 +2753,68 @@ index cf562d0..db9fade 100644
  	{
  		playerState_t *ps = &cg.predicted_player_state;
  
+diff --git a/codeJK2/cgame/cg_predict.cpp b/codeJK2/cgame/cg_predict.cpp
+index 8c73e52..aba3a4a 100644
+--- a/codeJK2/cgame/cg_predict.cpp
++++ b/codeJK2/cgame/cg_predict.cpp
+@@ -234,7 +234,10 @@ qboolean CG_CheckModifyUCmd( usercmd_t *cmd, vec3_t viewangles )
+ 		cmd->angles[YAW] = ANGLE2SHORT( cg.snap->ps.viewangles[YAW] ) - cg.snap->ps.delta_angles[YAW];
+ 		cmd->angles[ROLL] = 0;
+ 		*/
+-		VectorCopy( g_entities[0].pos4, viewangles );
++		if ( viewangles )
++		{// jk2coop round 31: entity 0 is the host on a joiner; keep our own body's facing
++			VectorCopy( cg_remoteClient ? cg.snap->ps.viewangles : g_entities[0].pos4, viewangles );
++		}
+ 		overridAngles = qtrue;
+ 		//CG_SetClientViewAngles( g_entities[cg.snap->ps.viewEntity].client->ps.viewangles, qtrue );
+ 	}
+diff --git a/codeJK2/cgame/cg_servercmds.cpp b/codeJK2/cgame/cg_servercmds.cpp
+index 88df7f5..7890952 100644
+--- a/codeJK2/cgame/cg_servercmds.cpp
++++ b/codeJK2/cgame/cg_servercmds.cpp
+@@ -245,6 +245,19 @@ static void CG_LCARSText_f( void ) {
+ 	CG_Printf( "CG_LCARSText() being called. Tell Ste\n" "String: \"%s\"\n", CG_Argv( 1 ) );
+ }
+ 
++extern void CG_CoopTest_f( void );	// round 33: gap test bot (cg_view.cpp)
++
++// jk2coop round 31: the host tells a joiner's game to switch weapon (getting
++// into / out of an AT-ST: G_DriveATST); on the host the game calls
++// CG_ChangeWeapon itself
++static void CG_CoopWeapon_f( void ) {
++	if ( cg_remoteClient )
++	{
++		extern void CG_ChangeWeapon( int num );
++		CG_ChangeWeapon( atoi( CG_Argv( 1 ) ) );
++	}
++}
++
+ static void CG_ClientLevelShot_f( void ) {
+ 	// clientLevelShot is sent before taking a special screenshot for
+ 	// the menu system during development
+@@ -264,6 +277,8 @@ static int svcmdcmp( const void *a, const void *b ) {
+ static serverCommand_t	commands[] = {
+ 	{ "chat",				CG_Print_f },
+ 	{ "clientLevelShot",	CG_ClientLevelShot_f },
++	{ "cooptest",			CG_CoopTest_f },
++	{ "coopweapon",			CG_CoopWeapon_f },
+ 	{ "cp",					CG_CenterPrint_f },
+ 	{ "cs",					CG_ConfigStringModified },
+ 	{ "ct",					CG_CaptionText_f },
 diff --git a/codeJK2/cgame/cg_view.cpp b/codeJK2/cgame/cg_view.cpp
-index f357828..7fc3fa9 100644
+index f357828..1f3fe93 100644
 --- a/codeJK2/cgame/cg_view.cpp
 +++ b/codeJK2/cgame/cg_view.cpp
-@@ -757,7 +757,7 @@ static void CG_OffsetThirdPersonView( void )
+@@ -30,6 +30,7 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
+ #include "../game/wp_saber.h"
+ #include "../game/anims.h"
+ #include "../game/g_functions.h"
++#include "../game/objectives.h"	// jk2coop round 31
+ 
+ #define MASK_CAMERACLIP (MASK_SOLID)
+ #define CAMERA_SIZE	4
+@@ -757,7 +758,7 @@ static void CG_OffsetThirdPersonView( void )
  	{// First person saber
  		// FIXME: use something network-friendly
  		vec3_t	org, viewDir;
@@ -2414,7 +2823,7 @@ index f357828..7fc3fa9 100644
  		float blend = 1.0f - fabs(cg.refdefViewAngles[PITCH])/90.0f;
  		AngleVectors( cg.refdefViewAngles, viewDir, NULL, NULL );
  		VectorMA( org, -8, viewDir, org );
-@@ -1033,7 +1033,10 @@ static void CG_OffsetFirstPersonView( qboolean firstPersonSaber ) {
+@@ -1033,7 +1034,10 @@ static void CG_OffsetFirstPersonView( qboolean firstPersonSaber ) {
  		return;
  	}
  
@@ -2426,7 +2835,7 @@ index f357828..7fc3fa9 100644
  	{
  		float perc, animLen = (float)PM_AnimLength( g_entities[0].client->clientInfo.animFileIndex, (animNumber_t)g_entities[0].client->ps.legsAnim );
  		if ( PM_InGetUp( &g_entities[0].client->ps ) || PM_InForceGetUp( &g_entities[0].client->ps ) )
-@@ -1683,7 +1686,11 @@ static qboolean CG_CalcViewValues( void ) {
+@@ -1683,7 +1687,11 @@ static qboolean CG_CalcViewValues( void ) {
  	{
  		// offset for local bobbing and kicks
  		CG_OffsetFirstPersonView( qfalse );
@@ -2439,7 +2848,7 @@ index f357828..7fc3fa9 100644
  		if ( playerCent && playerCent->gent && playerCent->gent->client )
  		{
  			VectorCopy( cg.refdef.vieworg, playerCent->gent->client->renderInfo.eyePoint );
-@@ -1770,13 +1777,233 @@ static void CG_PowerupTimerSounds( void )
+@@ -1770,13 +1778,804 @@ static void CG_PowerupTimerSounds( void )
  }
  
  //----------------------------
@@ -2656,6 +3065,577 @@ index f357828..7fc3fa9 100644
 +	s_crawlFrames = 0;
 +}
 +
++/*
++==============
++jk2coop round 31 (joiner only): campaign state, the host's cutscene, AT-ST
++and remote views. The host sends them (g_main.cpp G_CoopCampaignSync /
++G_CoopCutsceneSync / G_CoopViewKindSync); here they are copied into the
++same variables the host's own game uses, so the stock datapad, letterbox,
++HUD and view code draw them unchanged.
++==============
++*/
++objectives_t	g_coopObjectives[MAX_MISSION_OBJ];	// cg_info.cpp reads these on a joiner
++extern int		statusTextIndex;
++static char		s_coopStateSeen[MAX_STRING_CHARS];
++static int		s_coopCamEnt = -1;
++static qboolean	s_coopCamOn = qfalse;
++static int		s_coopAtst[MAX_CLIENTS];
++static int		s_coopAtstClass[MAX_CLIENTS];
++static qboolean	s_coopAtstCam = qfalse;
++static int		s_coopViewEnt = 0;
++static qboolean	s_coopViewFov = qfalse;
++
++void CG_CoopRemoteReset( void )
++{
++	s_coopStateSeen[0] = 0;
++	s_coopCamEnt = -1;
++	s_coopCamOn = qfalse;
++	for ( int i = 0; i < MAX_CLIENTS; i++ )
++	{
++		s_coopAtst[i] = -1;
++	}
++	s_coopAtstCam = qfalse;
++	s_coopViewEnt = 0;
++	s_coopViewFov = qfalse;
++	memset( g_coopObjectives, 0, sizeof( g_coopObjectives ) );
++}
++
++static void CG_CoopCampaignFrame( void )
++{
++	const char *cs = CG_ConfigString( CS_COOP_STATE );
++	if ( !cs || !strcmp( cs, s_coopStateSeen ) )
++	{
++		return;
++	}
++	Q_strncpyz( s_coopStateSeen, cs, sizeof( s_coopStateSeen ) );
++
++	const char *o = Info_ValueForKey( cs, "o" );
++	qboolean updated = qfalse;
++	for ( int i = 0; i < MAX_MISSION_OBJ; i++ )
++	{
++		const int v = ( o[0] && i < (int)strlen( o ) ) ? ( o[i] - '0' ) & 7 : 0;
++		const int display = ( v & 4 ) ? OBJECTIVE_SHOW : OBJECTIVE_HIDE;
++		const int status = v & 3;
++		if ( display && ( !g_coopObjectives[i].display || g_coopObjectives[i].status != status ) )
++		{
++			updated = qtrue;
++		}
++		g_coopObjectives[i].display = display;
++		g_coopObjectives[i].status = status;
++	}
++	if ( updated )
++	{// the "datapad updated" flash, like the host's
++		missionInfo_Updated = qtrue;
++		cgi_Cvar_Set( "cg_updatedDataPadObjective", "1" );
++	}
++	const char *mf = Info_ValueForKey( cs, "mf" );
++	if ( mf[0] )
++	{
++		statusTextIndex = atoi( mf );
++	}
++	cg.missionStatusShow = (qboolean)( atoi( Info_ValueForKey( cs, "ms" ) ) != 0 );
++	const char *cam = Info_ValueForKey( cs, "cam" );
++	s_coopCamEnt = cam[0] ? atoi( cam ) : -1;
++}
++
++// the host's cutscene camera entity if it is in the current snapshot
++static centity_t *CG_CoopCutsceneCam( void )
++{
++	if ( s_coopCamEnt <= 0 || s_coopCamEnt >= ENTITYNUM_WORLD )
++	{
++		return NULL;
++	}
++	for ( int k = 0; k < cg.snap->numEntities; k++ )
++	{
++		if ( cg.snap->entities[k].number == s_coopCamEnt )
++		{
++			centity_t *cc = &cg_entities[s_coopCamEnt];
++			return ( cc->currentState.eType == ET_INVISIBLE ) ? cc : NULL;
++		}
++	}
++	return NULL;
++}
++
++static void CG_CoopCutsceneFrame( void )
++{
++	centity_t *cc = CG_CoopCutsceneCam();
++	if ( !cc )
++	{
++		if ( s_coopCamOn )
++		{// the host's cutscene is over: back to our own view
++			in_camera = false;
++			client_camera.info_state = 0;
++			client_camera.bar_alpha = client_camera.bar_alpha_source = client_camera.bar_alpha_dest = 0.0f;
++			client_camera.bar_height = client_camera.bar_height_source = client_camera.bar_height_dest = 0.0f;
++			client_camera.fade_color[3] = 0.0f;
++			s_coopCamOn = qfalse;
++		}
++		return;
++	}
++	const entityState_t *es = &cc->currentState;
++	s_coopCamOn = qtrue;
++	in_camera = ( es->time != 0 );
++	client_camera.info_state = 0;	// no moves/pans/fades of our own: the host's values each frame
++	client_camera.bar_time = cg.time - (int)( BAR_DURATION * 2 );	// CGCam_UpdateBarFade then just keeps the values
++	client_camera.bar_alpha = client_camera.bar_alpha_source = client_camera.bar_alpha_dest = es->angles2[1];
++	client_camera.bar_height = client_camera.bar_height_source = client_camera.bar_height_dest = es->angles2[2];
++	client_camera.fade_color[0] = es->origin2[0];
++	client_camera.fade_color[1] = es->origin2[1];
++	client_camera.fade_color[2] = es->origin2[2];
++	client_camera.fade_color[3] = es->time2 / 1000.0f;
++	if ( !in_camera )
++	{
++		return;
++	}
++	// smooth between the host's frames the same way entities are
++	vec3_t org, ang;
++	VectorCopy( es->pos.trBase, org );
++	VectorCopy( es->apos.trBase, ang );
++	if ( cc->interpolate && cg.nextSnap && cg.nextSnap->serverTime > cg.snap->serverTime )
++	{
++		float f = (float)( cg.time - cg.snap->serverTime ) / (float)( cg.nextSnap->serverTime - cg.snap->serverTime );
++		if ( f < 0.0f ) f = 0.0f;
++		if ( f > 1.0f ) f = 1.0f;
++		for ( int i = 0; i < 3; i++ )
++		{
++			org[i] = es->pos.trBase[i] + f * ( cc->nextState.pos.trBase[i] - es->pos.trBase[i] );
++			ang[i] = LerpAngle( es->apos.trBase[i], cc->nextState.apos.trBase[i], f );
++		}
++	}
++	VectorCopy( org, client_camera.origin );
++	VectorCopy( ang, client_camera.angles );
++	client_camera.FOV = client_camera.FOV2 = ( es->angles2[0] > 1.0f ) ? es->angles2[0] : CAMERA_DEFAULT_FOV;
++}
++
++// a player in an AT-ST is drawn as the AT-ST (the host rebuilds that player's
++// model in G_DriveATST; our copies of the players never got it)
++extern vmCvar_t cg_thirdPersonAlpha;
++static void CG_CoopATSTFrame( void )
++{
++	const int local = cg.snap->ps.clientNum;
++	for ( int i = 0; i < MAX_CLIENTS; i++ )
++	{
++		gentity_t *pent = &g_entities[i];
++		const char *pcs = CG_ConfigString( CS_PLAYERS + i );
++		if ( !pent->client || !pcs[0] )
++		{
++			s_coopAtst[i] = -1;
++			continue;
++		}
++		const int eflags = ( i == local ) ? cg.snap->ps.eFlags : cg_entities[i].currentState.eFlags;
++		const int in = ( eflags & EF_IN_ATST ) ? 1 : 0;
++		if ( s_coopAtst[i] == in || ( s_coopAtst[i] == -1 && !in ) )
++		{
++			s_coopAtst[i] = in;
++			continue;
++		}
++		if ( in )
++		{
++			s_coopAtstClass[i] = pent->client->NPC_class;
++		}
++		s_coopAtst[i] = in;
++		if ( pent->ghoul2.IsValid() )
++		{
++			gi.G2API_CleanGhoul2Models( pent->ghoul2 );
++		}
++		pent->playerModel = -1;
++		pent->weaponModel = -1;
++		pent->client->NPC_class = in ? CLASS_ATST : (class_t)s_coopAtstClass[i];
++		const char *model = in ? "atst" : Info_ValueForKey( pcs, "model" );
++		if ( !model[0] )
++		{
++			model = "kyle";
++		}
++		extern void G_SetG2PlayerModel( gentity_t * const ent, const char *modelName,
++			const char *customSkin, const char *surfOff, const char *surfOn );
++		G_SetG2PlayerModel( pent, model, NULL, NULL, NULL );
++		pent->client->ps.legsAnim = pent->client->ps.torsoAnim = -1;	// re-apply animation...
++		pent->client->ps.weapon = -1;									// ...and the held weapon
++	}
++
++	// round 34: our own guns in an AT-ST. The host's "coopweapon" command can
++	// arrive before the snapshot that gives us them, so keep at it until the
++	// AT-ST guns are selected; and back to a normal weapon when we get out.
++	extern void CG_ChangeWeapon( int num );
++	if ( cg.snap->ps.eFlags & EF_IN_ATST )
++	{
++		if ( cg.weaponSelect != WP_ATST_MAIN && cg.weaponSelect != WP_ATST_SIDE )
++		{
++			CG_ChangeWeapon( WP_ATST_MAIN );
++		}
++	}
++	else if ( cg.weaponSelect == WP_ATST_MAIN || cg.weaponSelect == WP_ATST_SIDE )
++	{
++		CG_ChangeWeapon( WP_BRYAR_PISTOL );
++		if ( cg.weaponSelect == WP_ATST_MAIN || cg.weaponSelect == WP_ATST_SIDE )
++		{
++			CG_ChangeWeapon( WP_SABER );
++		}
++		if ( cg.weaponSelect == WP_ATST_MAIN || cg.weaponSelect == WP_ATST_SIDE )
++		{
++			CG_ChangeWeapon( WP_NONE );
++		}
++	}
++
++	// our own camera in an AT-ST (the host's game does this for itself in ClientThink_real)
++	if ( cg.snap->ps.eFlags & EF_IN_ATST )
++	{
++		const float pitch = cg.snap->ps.viewangles[PITCH];
++		cg.overrides.active |= ( CG_OVERRIDE_3RD_PERSON_RNG | CG_OVERRIDE_3RD_PERSON_POF | CG_OVERRIDE_3RD_PERSON_VOF );
++		cg.overrides.thirdPersonRange = 240;
++		if ( pitch > 0 )
++		{
++			cg.overrides.thirdPersonPitchOffset = pitch * -0.75f;
++			cg.overrides.thirdPersonVertOffset = 300 + pitch * -10;
++			if ( cg.overrides.thirdPersonVertOffset < 0 )
++			{
++				cg.overrides.thirdPersonVertOffset = 0;
++			}
++		}
++		else if ( pitch < 0 )
++		{
++			cg.overrides.thirdPersonPitchOffset = pitch * -0.75f;
++			cg.overrides.thirdPersonVertOffset = 300 + pitch * -5;
++			if ( cg.overrides.thirdPersonVertOffset > 300 )
++			{
++				cg.overrides.thirdPersonVertOffset = 300;
++			}
++		}
++		else
++		{
++			cg.overrides.thirdPersonPitchOffset = 0;
++			cg.overrides.thirdPersonVertOffset = 200;
++		}
++		s_coopAtstCam = qtrue;
++	}
++	else if ( s_coopAtstCam )
++	{
++		cg.overrides.active &= ~( CG_OVERRIDE_3RD_PERSON_RNG | CG_OVERRIDE_3RD_PERSON_VOF | CG_OVERRIDE_3RD_PERSON_POF | CG_OVERRIDE_3RD_PERSON_APH );
++		cg.overrides.thirdPersonRange = cg.overrides.thirdPersonVertOffset = cg.overrides.thirdPersonPitchOffset = 0;
++		cg.overrides.thirdPersonAlpha = cg_thirdPersonAlpha.value;
++		s_coopAtstCam = qfalse;
++	}
++}
++
++// what we look through: our copies of cameras / turrets / droids have no
++// class name, health or NPC stats, which the view and HUD code ask for
++static void CG_CoopViewKindFrame( void )
++{
++	const int ve = cg.snap->ps.viewEntity;
++	const int kind = cg.snap->ps.stats[STAT_COOP_VIEWKIND];
++	if ( s_coopViewEnt && s_coopViewEnt != ve )
++	{
++		gentity_t *old = &g_entities[s_coopViewEnt];
++		old->classname = NULL;
++		old->e_DieFunc = dieF_NULL;
++		s_coopViewEnt = 0;
++	}
++	qboolean wantFov = qfalse;
++	if ( ve > 0 && ve < ENTITYNUM_WORLD && kind )
++	{
++		gentity_t *v = &g_entities[ve];
++		switch ( kind & 0xff )
++		{
++		case COOP_VIEW_CAMERA:
++		case COOP_VIEW_CAMERA_DEAD:
++			v->classname = (char *)"misc_camera";
++			v->e_DieFunc = dieF_camera_die;
++			v->health = ( ( kind & 0xff ) == COOP_VIEW_CAMERA ) ? 1 : 0;
++			break;
++		case COOP_VIEW_PANEL_TURRET:
++			v->classname = (char *)"misc_panel_turret";
++			v->s.weapon = WP_TURRET;	// CG_CalcViewValues: a fixed camera, no third-person offset
++			cg.overrides.fov = 50;
++			wantFov = qtrue;
++			break;
++		case COOP_VIEW_NPC:
++			cg.overrides.fov = ( kind >> 8 ) & 0xff;
++			wantFov = qtrue;
++			break;
++		default:
++			break;
++		}
++		s_coopViewEnt = ve;
++	}
++	if ( wantFov )
++	{
++		cg.overrides.active |= CG_OVERRIDE_FOV;
++		s_coopViewFov = qtrue;
++	}
++	else if ( s_coopViewFov )
++	{
++		cg.overrides.active &= ~CG_OVERRIDE_FOV;
++		cg.overrides.fov = 0;
++		s_coopViewFov = qfalse;
++	}
++}
++
++/*
++==============
++jk2coop round 33 (joiner): the co-op feature test bot's checks. The host's
++bot (g_utils.cpp GT_RunTest) changes something and sends
++"cooptest <test> <ms> <expected...>"; <ms> later we look at our own state
++and log "P2 GT map=.. test=.. PASS|FAIL <what we saw>" to coop_crawl_log.
++==============
++*/
++extern int	g_coopChargeGlowCount;
++extern void	CG_CoopCrosshairTrace( trace_t *tr, const vec3_t start, const vec3_t end, int skipNum, int mask );
++static struct
++{
++	char	name[32];
++	char	arg[8][96];
++	int		argc;
++	int		start;
++	int		due;
++	int		phase;
++	float	frameA;
++	qboolean haveA;
++	int		chargeBase;
++	char	thirdPerson[8];
++} s_coopTest;
++
++void CG_CoopTest_f( void )
++{
++	if ( !cg_remoteClient )
++	{
++		return;
++	}
++	memset( &s_coopTest, 0, sizeof( s_coopTest ) );
++	Q_strncpyz( s_coopTest.name, CG_Argv( 1 ), sizeof( s_coopTest.name ) );
++	s_coopTest.start = cgi_Milliseconds();
++	s_coopTest.due = s_coopTest.start + atoi( CG_Argv( 2 ) );
++	for ( int i = 0; i < 8 && i + 3 < cgi_Argc(); i++ )
++	{
++		Q_strncpyz( s_coopTest.arg[i], CG_Argv( i + 3 ), sizeof( s_coopTest.arg[i] ) );
++		s_coopTest.argc = i + 1;
++	}
++	if ( !Q_stricmp( s_coopTest.name, "charge" ) )
++	{// the glow is on the first-person gun
++		s_coopTest.chargeBase = g_coopChargeGlowCount;
++		Q_strncpyz( s_coopTest.thirdPerson, va( "%d", cg_thirdPerson.integer ), sizeof( s_coopTest.thirdPerson ) );
++		cgi_Cvar_Set( "cg_thirdperson", "0" );
++	}
++	else if ( !Q_stricmp( s_coopTest.name, "menuclock" ) )
++	{// open the pause menu (full screen) and close it again. Our own frames stop
++	 // while a full-screen menu is up, so the closing has to come from the
++	 // engine's command buffer ("wait" counts engine frames), not from here.
++		cgi_SendConsoleCommand( "togglemenu; wait 60; togglemenu\n" );
++		s_coopTest.phase = 2;
++	}
++}
++
++static void CG_CoopTestResult( qboolean pass, const char *detail )
++{
++	CG_CoopCrawlLog( "P2 GT map=%s test=%s %s %s", CG_CoopCrawlMapName(), s_coopTest.name, pass ? "PASS" : "FAIL", detail );
++	s_coopTest.name[0] = 0;
++}
++
++// current frame of an entity's legs on our screen (-1 = no skeleton)
++static float CG_CoopTestLegsFrame( int num )
++{
++	gentity_t *g = &g_entities[num];
++	if ( !g->ghoul2.IsValid() || g->playerModel < 0 || g->rootBone < 0 )
++	{
++		return -1.0f;
++	}
++	float frame = -1.0f, speed = 0.0f;
++	int sf = 0, ef = 0, fl = 0;
++	if ( !gi.G2API_GetBoneAnimIndex( &g->ghoul2[g->playerModel], g->rootBone, cg.time, &frame, &sf, &ef, &fl, &speed, 0 ) )
++	{
++		return -1.0f;
++	}
++	return frame;
++}
++
++static qboolean CG_CoopTestInSnap( int num )
++{
++	for ( int k = 0; k < cg.snap->numEntities; k++ )
++	{
++		if ( cg.snap->entities[k].number == num )
++		{
++			return qtrue;
++		}
++	}
++	return (qboolean)( num >= 0 && num < MAX_CLIENTS );	// players are always sent
++}
++
++static void CG_CoopTestFrame( void )
++{
++	if ( !s_coopTest.name[0] )
++	{
++		return;
++	}
++	const int	now = cgi_Milliseconds();
++	const char	*t = s_coopTest.name;
++	char		d[512];
++
++	if ( !Q_stricmp( t, "menuclock" ) )
++	{
++		if ( s_coopTest.phase == 2 && now >= s_coopTest.start + 2600 )
++		{
++			s_coopTest.frameA = CG_CoopTestLegsFrame( atoi( s_coopTest.arg[0] ) );
++			s_coopTest.phase = 3;
++		}
++	}
++	if ( now < s_coopTest.due )
++	{
++		return;
++	}
++
++	if ( !Q_stricmp( t, "obj" ) )
++	{
++		char got[MAX_MISSION_OBJ + 1];
++		for ( int i = 0; i < MAX_MISSION_OBJ; i++ )
++		{
++			got[i] = (char)( '0' + ( g_coopObjectives[i].display ? 4 : 0 ) + ( g_coopObjectives[i].status & 3 ) );
++		}
++		got[MAX_MISSION_OBJ] = 0;
++		int bad = -1;
++		for ( int i = 0; i < MAX_MISSION_OBJ && bad < 0; i++ )
++		{
++			if ( got[i] != s_coopTest.arg[0][i] )
++			{
++				bad = i;
++			}
++		}
++		Com_sprintf( d, sizeof( d ), "first_mismatch=%d got=%.8s want=%.8s", bad, got, s_coopTest.arg[0] );
++		CG_CoopTestResult( (qboolean)( bad < 0 ), d );
++	}
++	else if ( !Q_stricmp( t, "cam" ) && !Q_stricmp( s_coopTest.arg[0], "off" ) )
++	{
++		Com_sprintf( d, sizeof( d ), "after: in_camera=%d", (int)in_camera );
++		CG_CoopTestResult( (qboolean)!in_camera, d );
++	}
++	else if ( !Q_stricmp( t, "cam" ) )
++	{
++		vec3_t want = { (float)atof( s_coopTest.arg[0] ), (float)atof( s_coopTest.arg[1] ), (float)atof( s_coopTest.arg[2] ) };
++		const float dist = Distance( want, client_camera.origin );
++		Com_sprintf( d, sizeof( d ), "in_camera=%d camera_off_by=%.0f bars=%.2f", (int)in_camera, dist, client_camera.bar_alpha );
++		CG_CoopTestResult( (qboolean)( in_camera && dist < 32.0f ), d );
++	}
++	else if ( !Q_stricmp( t, "snapview" ) )
++	{
++		vec3_t eye;
++		VectorCopy( cg.snap->ps.origin, eye );
++		eye[2] += cg.snap->ps.viewheight;
++		const float dist = Distance( eye, cg.snap->ps.serverViewOrg );
++		Com_sprintf( d, sizeof( d ), "server_viewpoint_off_by=%.0f (must be our own eyes)", dist );
++		CG_CoopTestResult( (qboolean)( dist < 8.0f ), d );
++	}
++	else if ( !Q_stricmp( t, "camview" ) || !Q_stricmp( t, "npcview" ) || !Q_stricmp( t, "turret" ) )
++	{
++		const int kind = atoi( s_coopTest.arg[0] );
++		const int ent = atoi( s_coopTest.arg[1] );
++		vec3_t at = { (float)atof( s_coopTest.arg[2] ), (float)atof( s_coopTest.arg[3] ), (float)atof( s_coopTest.arg[4] ) };
++		const int ve = cg.snap->ps.viewEntity;
++		const int gotKind = cg.snap->ps.stats[STAT_COOP_VIEWKIND] & 0xff;
++		const float dist = Distance( at, cg.snap->ps.serverViewOrg );
++		qboolean ok = (qboolean)( ve == ent && gotKind == kind );
++		if ( kind == COOP_VIEW_CAMERA )
++		{
++			ok = (qboolean)( ok && !Q_stricmp( g_entities[ent].classname, "misc_camera" ) && dist < 8.0f );
++		}
++		else if ( kind == COOP_VIEW_PANEL_TURRET )
++		{
++			ok = (qboolean)( ok && ( cg.overrides.active & CG_OVERRIDE_FOV ) && cg.overrides.fov == 50 );
++		}
++		else
++		{
++			ok = (qboolean)( ok && ( cg.overrides.active & CG_OVERRIDE_FOV ) && cg.overrides.fov == ( ( cg.snap->ps.stats[STAT_COOP_VIEWKIND] >> 8 ) & 0xff ) );
++		}
++		Com_sprintf( d, sizeof( d ), "kind=%d view_ent=%d/%d stat_kind=%d viewpoint_off_by=%.0f fov=%.0f%s", kind, ve, ent, gotKind, dist,
++			cg.overrides.fov, ( cg.overrides.active & CG_OVERRIDE_FOV ) ? "" : "(off)" );
++		CG_CoopTestResult( ok, d );
++	}
++	else if ( !Q_stricmp( t, "atst" ) )
++	{
++		const int want = atoi( s_coopTest.arg[0] );
++		gentity_t *me = &g_entities[cg.snap->ps.clientNum];
++		const qboolean isAtst = (qboolean)( me->client && me->client->NPC_class == CLASS_ATST );
++		qboolean ok;
++		if ( want )
++		{
++			ok = (qboolean)( isAtst && cg.renderingThirdPerson && cg.weaponSelect == WP_ATST_MAIN );
++		}
++		else
++		{
++			ok = (qboolean)( !isAtst && cg.weaponSelect != WP_ATST_MAIN && !( cg.overrides.active & CG_OVERRIDE_3RD_PERSON_RNG ) );
++		}
++		Com_sprintf( d, sizeof( d ), "want=%d atst_model=%d third_person=%d weapon=%d", want, isAtst, (int)cg.renderingThirdPerson, cg.weaponSelect );
++		CG_CoopTestResult( ok, d );
++	}
++	else if ( !Q_stricmp( t, "team" ) )
++	{
++		const int ids[3] = { 0, atoi( s_coopTest.arg[0] ), atoi( s_coopTest.arg[1] ) };
++		const int wantTeam[3] = { TEAM_PLAYER, TEAM_PLAYER, TEAM_ENEMY };
++		qboolean ok = qtrue;
++		int checked = 0;
++		d[0] = 0;
++		for ( int k = 0; k < 3; k++ )
++		{
++			const int n = ids[k];
++			if ( n < 0 || !CG_CoopTestInSnap( n ) || ( n != 0 && n == cg.snap->ps.clientNum ) )
++			{
++				continue;
++			}
++			const int pw = cg_entities[n].currentState.powerups;
++			const int team = ( ( pw & COOP_PWB_TEAM_MASK ) >> COOP_PWB_TEAM_SHIFT ) - 1;
++			// the crosshair trace must stop on this character (looking down on it)
++			trace_t tr;
++			vec3_t from, to;
++			VectorCopy( cg_entities[n].lerpOrigin, from );
++			VectorCopy( cg_entities[n].lerpOrigin, to );
++			from[2] += 50;
++			to[2] -= 8;
++			CG_CoopCrosshairTrace( &tr, from, to, cg.snap->ps.clientNum, MASK_OPAQUE | CONTENTS_SHOTCLIP | CONTENTS_BODY );
++			const qboolean good = (qboolean)( team == wantTeam[k] && tr.entityNum == n );
++			ok = (qboolean)( ok && good );
++			checked++;
++			Q_strcat( d, sizeof( d ), va( "ent%d team=%d/%d trace_hit=%d; ", n, team, wantTeam[k], tr.entityNum ) );
++		}
++		CG_CoopTestResult( (qboolean)( ok && checked > 0 ), d );
++	}
++	else if ( !Q_stricmp( t, "charge" ) )
++	{
++		const int glows = g_coopChargeGlowCount - s_coopTest.chargeBase;
++		cgi_Cvar_Set( "cg_thirdperson", s_coopTest.thirdPerson );
++		Com_sprintf( d, sizeof( d ), "glow_frames=%d weapon=%d", glows, cg.snap->ps.weapon );
++		CG_CoopTestResult( (qboolean)( glows > 0 ), d );
++	}
++	else if ( !Q_stricmp( t, "menuclock" ) )
++	{
++		const float b = CG_CoopTestLegsFrame( atoi( s_coopTest.arg[0] ) );
++		Com_sprintf( d, sizeof( d ), "host_legs_frame %.1f -> %.1f (must move after a menu)", s_coopTest.frameA, b );
++		CG_CoopTestResult( (qboolean)( s_coopTest.frameA >= 0.0f && b >= 0.0f && b != s_coopTest.frameA ), d );
++	}
++	else if ( !Q_stricmp( t, "revive" ) )
++	{
++		const int want = atoi( s_coopTest.arg[0] );
++		const int downed = cg.snap->ps.stats[STAT_COOP_DOWNED];
++		const qboolean ok = want ? (qboolean)( downed == 1 && cg.renderingThirdPerson )
++			: (qboolean)( downed == 0 && cg.snap->ps.stats[STAT_HEALTH] > 0 );
++		Com_sprintf( d, sizeof( d ), "want=%d downed=%d health=%d third_person=%d", want, downed, cg.snap->ps.stats[STAT_HEALTH], (int)cg.renderingThirdPerson );
++		CG_CoopTestResult( ok, d );
++	}
++	else
++	{
++		CG_CoopTestResult( qfalse, "unknown test" );
++	}
++}
++
++void CG_CoopRemoteFrame( void )
++{
++	if ( !cg_remoteClient || !cg.snap )
++	{
++		return;
++	}
++	CG_CoopCampaignFrame();
++	CG_CoopCutsceneFrame();
++	CG_CoopATSTFrame();
++	CG_CoopViewKindFrame();
++	CG_CoopTestFrame();
++}
++
  void CG_RunEmplacedWeapon()
  {
 -	gentity_t	*player = &g_entities[0],
@@ -2675,7 +3655,7 @@ index f357828..7fc3fa9 100644
  	{
  //		float dist = -1; // default distance behind gun
  
-@@ -1894,8 +2121,8 @@ wasForceSpeed=isForceSpeed;
+@@ -1894,8 +2693,8 @@ wasForceSpeed=isForceSpeed;
  //
  	float mPitchOverride = 0.0f;
  	float mYawOverride = 0.0f;
@@ -2686,9 +3666,17 @@ index f357828..7fc3fa9 100644
  		if ( localEFlags & EF_LOCKED_TO_WEAPON )
  		{
  			speed *= 0.25f;
-@@ -1918,7 +2145,8 @@ wasForceSpeed=isForceSpeed;
+@@ -1914,11 +2713,16 @@ wasForceSpeed=isForceSpeed;
+ 	// update cg.predicted_player_state
+ 	CG_PredictPlayerState();
+ 
++	// jk2coop round 31 (joiner): the host's cutscene, objectives, AT-ST, remote views
++	CG_CoopRemoteFrame();
++
+ 	// decide on third person view
  	cg.renderingThirdPerson = (qboolean)(
  		cg_thirdPerson.integer ||
++		( cg_remoteClient && ( cg.snap->ps.eFlags & EF_IN_ATST ) ) ||	// jk2coop round 31: our own AT-ST
  		(cg.snap->ps.stats[STAT_HEALTH] <= 0) ||
 -		(g_entities[0].client &&
 +		(cg.snap->ps.stats[STAT_COOP_DOWNED] == 1) ||	// jk2coop round 23: see yourself lying there
@@ -2696,7 +3684,7 @@ index f357828..7fc3fa9 100644
  			g_entities[0].client->NPC_class == CLASS_ATST));
  
  	if ( cg.zoomMode )
-@@ -1989,7 +2217,32 @@ wasForceSpeed=isForceSpeed;
+@@ -1989,7 +2793,32 @@ wasForceSpeed=isForceSpeed;
  	//if ( !VectorCompare2( cg.refdef.vieworg, cg.snap->ps.serverViewOrg ) && !gi.inPVS( cg.refdef.vieworg, cg.snap->ps.serverViewOrg ) )
  	{//actual view org and server's view org don't match and aren't same PVS, rebuild the areamask
  		//Com_Printf( S_COLOR_RED"%s != %s\n", vtos(cg.refdef.vieworg), vtos(cg.snap->ps.serverViewOrg) );
@@ -2731,10 +3719,79 @@ index f357828..7fc3fa9 100644
  
  	// Don't draw the in-view weapon when in camera mode
 diff --git a/codeJK2/cgame/cg_weapons.cpp b/codeJK2/cgame/cg_weapons.cpp
-index 548e81f..40cce34 100644
+index 548e81f..c446100 100644
 --- a/codeJK2/cgame/cg_weapons.cpp
 +++ b/codeJK2/cgame/cg_weapons.cpp
-@@ -904,20 +904,30 @@ force-power/saber/muzzle state) — none of which is populated for the local pla
+@@ -892,6 +892,68 @@ Add the weapon, and flash for the player's view
+ extern int PM_TorsoAnimForFrame( gentity_t *ent, int torsoFrame );
+ extern float CG_ForceSpeedFOV( void );
+ 
++/*
++===============
++jk2coop round 33: the glow at the end of the barrel while charging the
++pistol / bowcaster / DEMP2 alt fire, shared by the host's first-person gun
++(CG_AddViewWeapon) and a joiner's (CG_RemoteAddViewWeapon), which never had it.
++===============
++*/
++int g_coopChargeGlowCount = 0;	// round 33: gap test (cg_view.cpp CG_CoopTestFrame)
++static void CG_AddWeaponChargeGlow( const playerState_t *ps, vec3_t origin )
++{
++	// Do special charge bits
++	//-----------------------
++	if (( ps->weaponstate == WEAPON_CHARGING_ALT && ps->weapon == WP_BRYAR_PISTOL )
++			|| ( ps->weapon == WP_BOWCASTER && ps->weaponstate == WEAPON_CHARGING )
++			|| ( ps->weapon == WP_DEMP2 && ps->weaponstate == WEAPON_CHARGING_ALT ))
++	{
++		int		shader = 0;
++		float	val = 0.0f, scale = 1.0f;
++		vec3_t	WHITE	= {1.0f,1.0f,1.0f};
++
++		if ( ps->weapon == WP_BRYAR_PISTOL )
++		{
++			// Hardcoded max charge time of 1 second
++			val = ( cg.time - ps->weaponChargeTime ) * 0.001f;
++			shader = cgi_R_RegisterShader( "gfx/effects/bryarFrontFlash" );
++		}
++		else if ( ps->weapon == WP_BOWCASTER )
++		{
++			// Hardcoded max charge time of 1 second
++			val = ( cg.time - ps->weaponChargeTime ) * 0.001f;
++			shader = cgi_R_RegisterShader( "gfx/effects/greenFrontFlash" );
++		}
++		else if ( ps->weapon == WP_DEMP2 )
++		{
++			// Hardcoded max charge time of 1 second
++			val = ( cg.time - ps->weaponChargeTime ) * 0.001f;
++			shader = cgi_R_RegisterShader( "gfx/misc/lightningFlash" );
++			scale = 1.75f;
++		}
++
++		if ( val < 0.0f )
++		{
++			val = 0.0f;
++		}
++		else if ( val > 1.0f )
++		{
++			val = 1.0f;
++			CGCam_Shake( 0.1f, 100 );
++		}
++		else
++		{
++			CGCam_Shake( val * val * 0.3f, 100 );
++		}
++
++		val += Q_flrand(0.0f, 1.0f) * 0.5f;
++		g_coopChargeGlowCount++;
++
++		FX_AddSprite( origin, NULL, NULL, 3.0f * val * scale, 0.0f, 0.7f, 0.7f, WHITE, WHITE, Q_flrand(0.0f, 1.0f) * 360, 0.0f, 1.0f, shader, FX_USE_ALPHA | FX_DEPTH_HACK );
++	}
++
++}
++
+ /*
+ ==============
+ CG_RemoteAddViewWeapon
+@@ -904,20 +966,30 @@ force-power/saber/muzzle state) — none of which is populated for the local pla
  on a remote client, so the host path faults there. This draws the gun using only
  cg.* view state and the networked ps->weapon: gun registered from ps->weapon,
  positioned exactly like the host path (CG_CalculateWeaponPosition + cg_gun_*),
@@ -2769,7 +3826,7 @@ index 548e81f..40cce34 100644
  
  	if ( cgFov < 1 )
  		cgFov = 1;
-@@ -956,6 +966,8 @@ static void CG_RemoteAddViewWeapon( playerState_t *ps )
+@@ -956,6 +1028,8 @@ static void CG_RemoteAddViewWeapon( playerState_t *ps )
  
  	CG_RegisterWeapon( ps->weapon );
  	weapon = &cg_weapons[ps->weapon];
@@ -2778,7 +3835,7 @@ index 548e81f..40cce34 100644
  
  	// set up gun position (pure cg.* view state, no gentity)
  	memset( &hand, 0, sizeof(hand) );
-@@ -974,10 +986,95 @@ static void CG_RemoteAddViewWeapon( playerState_t *ps )
+@@ -974,10 +1048,95 @@ static void CG_RemoteAddViewWeapon( playerState_t *ps )
  		VectorScale( hand.axis[0], fracWeapFOV, hand.axis[0] );
  	}
  
@@ -2878,7 +3935,7 @@ index 548e81f..40cce34 100644
  
  	// add the weapon model, positioned on the hands model's tag_weapon
  	memset( &gun, 0, sizeof(gun) );
-@@ -990,6 +1087,63 @@ static void CG_RemoteAddViewWeapon( playerState_t *ps )
+@@ -990,6 +1149,65 @@ static void CG_RemoteAddViewWeapon( playerState_t *ps )
  	gun.renderfx = RF_DEPTHHACK | RF_FIRST_PERSON;
  
  	cgi_R_AddRefEntityToScene( &gun );
@@ -2939,10 +3996,93 @@ index 548e81f..40cce34 100644
 +		VectorCopy( flash.axis[0], cent->gent->client->renderInfo.muzzleDir );
 +		cent->gent->client->renderInfo.mPCalcTime = cg.time;
 +	}
++	// jk2coop round 33: charge glow (the host path has always drawn it)
++	CG_AddWeaponChargeGlow( ps, flash.origin );
  }
  
  void CG_AddViewWeapon( playerState_t *ps )
-@@ -2731,6 +2885,10 @@ void CG_FireWeapon( centity_t *cent, qboolean alt_fire )
+@@ -1290,54 +1508,7 @@ void CG_AddViewWeapon( playerState_t *ps )
+ 		CG_LightningBolt( cent, flash.origin );
+ 	}
+ 
+-	// Do special charge bits
+-	//-----------------------
+-	if (( ps->weaponstate == WEAPON_CHARGING_ALT && ps->weapon == WP_BRYAR_PISTOL )
+-			|| ( ps->weapon == WP_BOWCASTER && ps->weaponstate == WEAPON_CHARGING )
+-			|| ( ps->weapon == WP_DEMP2 && ps->weaponstate == WEAPON_CHARGING_ALT ))
+-	{
+-		int		shader = 0;
+-		float	val = 0.0f, scale = 1.0f;
+-		vec3_t	WHITE	= {1.0f,1.0f,1.0f};
+-
+-		if ( ps->weapon == WP_BRYAR_PISTOL )
+-		{
+-			// Hardcoded max charge time of 1 second
+-			val = ( cg.time - ps->weaponChargeTime ) * 0.001f;
+-			shader = cgi_R_RegisterShader( "gfx/effects/bryarFrontFlash" );
+-		}
+-		else if ( ps->weapon == WP_BOWCASTER )
+-		{
+-			// Hardcoded max charge time of 1 second
+-			val = ( cg.time - ps->weaponChargeTime ) * 0.001f;
+-			shader = cgi_R_RegisterShader( "gfx/effects/greenFrontFlash" );
+-		}
+-		else if ( ps->weapon == WP_DEMP2 )
+-		{
+-			// Hardcoded max charge time of 1 second
+-			val = ( cg.time - ps->weaponChargeTime ) * 0.001f;
+-			shader = cgi_R_RegisterShader( "gfx/misc/lightningFlash" );
+-			scale = 1.75f;
+-		}
+-
+-		if ( val < 0.0f )
+-		{
+-			val = 0.0f;
+-		}
+-		else if ( val > 1.0f )
+-		{
+-			val = 1.0f;
+-			CGCam_Shake( 0.1f, 100 );
+-		}
+-		else
+-		{
+-			CGCam_Shake( val * val * 0.3f, 100 );
+-		}
+-
+-		val += Q_flrand(0.0f, 1.0f) * 0.5f;
+-
+-		FX_AddSprite( flash.origin, NULL, NULL, 3.0f * val * scale, 0.0f, 0.7f, 0.7f, WHITE, WHITE, Q_flrand(0.0f, 1.0f) * 360, 0.0f, 1.0f, shader, FX_USE_ALPHA | FX_DEPTH_HACK );
+-	}
++	CG_AddWeaponChargeGlow( ps, flash.origin );
+ 
+ 	// Check if the heavy repeater is finishing up a sustained burst
+ 	//-------------------------------
+@@ -2460,6 +2631,16 @@ void CG_ChangeWeapon( int num )
+ 		return;
+ 	}
+ 
++	if ( cg_remoteClient )
++	{// jk2coop round 34: entity 0 is the HOST on a joiner -- every switch the
++	 // host's game asked for (AT-ST guns) was refused against the host's weapons
++		if ( !cg.snap || !( cg.snap->ps.stats[STAT_WEAPONS] & ( 1 << num ) ) )
++		{
++			return;		// don't have the weapon
++		}
++	}
++	else
++	{
+ 	if( player->flags & FL_LOCK_PLAYER_WEAPONS )
+ 	{
+ 		CG_PlayerLockedWeaponSpeech( qfalse );
+@@ -2470,6 +2651,7 @@ void CG_ChangeWeapon( int num )
+ 	{
+ 		return;		// don't have the weapon
+ 	}
++	}
+ 
+ 	// because we don't have an empty hand model for the thermal, don't allow selecting that weapon if it has no ammo
+ 	if ( num == WP_THERMAL )
+@@ -2731,6 +2913,10 @@ void CG_FireWeapon( centity_t *cent, qboolean alt_fire )
  	// append the flash to the weapon model
  	cent->muzzleFlashTime = cg.time;
  	cent->altFire = alt_fire;
@@ -3004,6 +4144,21 @@ index 8d4a2d8..e169b4d 100644
  	{
  		if(!PInUse(i))
  			continue;
+diff --git a/codeJK2/game/NPC.cpp b/codeJK2/game/NPC.cpp
+index b57d634..cf90400 100644
+--- a/codeJK2/game/NPC.cpp
++++ b/codeJK2/game/NPC.cpp
+@@ -2033,8 +2033,8 @@ void NPC_Think ( gentity_t *self)//, int msec )
+ 
+ 	self->nextthink = level.time + FRAMETIME/2;
+ 
+-	if ( player->client->ps.viewEntity == self->s.number )
+-	{//being controlled by player
++	if ( G_CoopViewer( self ) )
++	{//being controlled by player (jk2coop round 31: host or joiner)
+ 		if ( self->client )
+ 		{//make the noises
+ 			if ( TIMER_Done( self, "patrolNoise" ) && !Q_irand( 0, 20 ) )
 diff --git a/codeJK2/game/NPC_combat.cpp b/codeJK2/game/NPC_combat.cpp
 index a0b3b23..d69db23 100644
 --- a/codeJK2/game/NPC_combat.cpp
@@ -3036,9 +4191,24 @@ index a0b3b23..d69db23 100644
  		{
  			if( newenemy->health > 0 )
 diff --git a/codeJK2/game/NPC_reactions.cpp b/codeJK2/game/NPC_reactions.cpp
-index 187bb0d..1b7ee35 100644
+index 187bb0d..300febc 100644
 --- a/codeJK2/game/NPC_reactions.cpp
 +++ b/codeJK2/game/NPC_reactions.cpp
+@@ -388,12 +388,12 @@ void NPC_Pain( gentity_t *self, gentity_t *inflictor, gentity_t *other, vec3_t p
+ 	if ( self->client->playerTeam
+ 		&& other->client
+ 		&& otherTeam == self->client->playerTeam
+-		&& (!player->client->ps.viewEntity || other->s.number != player->client->ps.viewEntity))
++		&& !G_CoopViewer( other ) )	// jk2coop round 31: not something a player is controlling
+ 	{//hit by a teammate
+ 		if ( other != self->enemy && self != other->enemy )
+ 		{//we weren't already enemies
+ 			if ( self->enemy || other->enemy
+-				|| (other->s.number&&other->s.number!=player->client->ps.viewEntity)
++				|| !G_IsCoopPlayer( other )
+ 				/*|| (!other->s.number&&Q_irand( 0, 3 ))*/ )
+ 			{//if one of us actually has an enemy already, it's okay, just an accident OR wasn't hit by player or someone controlled by player OR player hit ally and didn't get 25% chance of getting mad (FIXME:accumulate anger+base on diff?)
+ 				//FIXME: player should have to do a certain amount of damage to ally or hit them several times to make them mad
 @@ -529,7 +529,7 @@ void NPC_Touch(gentity_t *self, gentity_t *other, trace_t *trace)
  
  	if ( self->message && self->health <= 0 )
@@ -3629,10 +4799,23 @@ index 24c8e81..799feb1 100644
  	switch ( level )
  	{
 diff --git a/codeJK2/game/bg_pmove.cpp b/codeJK2/game/bg_pmove.cpp
-index 964cfce..dd94e2f 100644
+index 964cfce..4cef20d 100644
 --- a/codeJK2/game/bg_pmove.cpp
 +++ b/codeJK2/game/bg_pmove.cpp
-@@ -4520,8 +4520,10 @@ qboolean PM_AdjustStandAnimForSlope( void )
+@@ -495,10 +495,8 @@ qboolean PM_ForceJumpingUp( gentity_t *gent )
+ 
+ 	if ( gent->NPC )
+ 	{//this is ONLY for the player
+-		if ( player
+-			&& player->client
+-			&& player->client->ps.viewEntity == gent->s.number )
+-		{//okay to jump if an NPC controlled by the player
++		if ( G_CoopViewer( gent ) )
++		{//okay to jump if an NPC controlled by the player (jk2coop round 31: any player)
+ 		}
+ 		else
+ 		{
+@@ -4520,8 +4518,10 @@ qboolean PM_AdjustStandAnimForSlope( void )
  	{//only ATST and player does this
  		return qfalse;
  	}
@@ -3644,7 +4827,7 @@ index 964cfce..dd94e2f 100644
  		return qfalse;
  	}
  	if ( pm->gent->footLBolt == -1 || pm->gent->footRBolt == -1 )
-@@ -8390,15 +8392,20 @@ static void PM_Inventory(void)
+@@ -8390,15 +8390,20 @@ static void PM_Inventory(void)
  extern void ForceThrow( gentity_t *self, qboolean pull );
  extern void ForceHeal( gentity_t *self );
  extern void ForceTelepathy( gentity_t *self );
@@ -3666,11 +4849,32 @@ index 964cfce..dd94e2f 100644
  		{
  		case FP_HEAL:
  			ForceHeal( ent );
+@@ -8652,16 +8657,16 @@ void PM_AdjustAttackStates( pmove_t *pm )
+ 		if ( pm->cmd.buttons & BUTTON_ALT_ATTACK )
+ 		{
+ 			pm->ps->eFlags |= EF_ALT_FIRING;
+-			if ( !pm->ps->clientNum && pm->gent && (pm->ps->eFlags&EF_IN_ATST) )
+-			{//switch ATST barrels
++			if ( pm->ps->clientNum < MAX_CLIENTS && pm->gent && !pm->gent->NPC && (pm->ps->eFlags&EF_IN_ATST) )
++			{//switch ATST barrels (jk2coop: any player)
+ 				pm->gent->alt_fire = qtrue;
+ 			}
+ 		}
+ 		else
+ 		{
+ 			pm->ps->eFlags &= ~EF_ALT_FIRING;
+-			if ( !pm->ps->clientNum && pm->gent && (pm->ps->eFlags&EF_IN_ATST) )
+-			{//switch ATST barrels
++			if ( pm->ps->clientNum < MAX_CLIENTS && pm->gent && !pm->gent->NPC && (pm->ps->eFlags&EF_IN_ATST) )
++			{//switch ATST barrels (jk2coop: any player)
+ 				pm->gent->alt_fire = qfalse;
+ 			}
+ 		}
 diff --git a/codeJK2/game/bg_public.h b/codeJK2/game/bg_public.h
-index 64bdfb6..287e293 100644
+index 64bdfb6..fa0b47f 100644
 --- a/codeJK2/game/bg_public.h
 +++ b/codeJK2/game/bg_public.h
-@@ -257,6 +257,16 @@ typedef enum {
+@@ -257,6 +257,22 @@ typedef enum {
  	PW_NUM_POWERUPS
  } powerup_t;
  
@@ -3683,11 +4887,17 @@ index 64bdfb6..287e293 100644
 +#define COOP_PWB_LIGHTNING_WIDE	15	// ...at level 3 (arc instead of a line)
 +#define COOP_PWB_PUSHED			16	// forcePushTime > level.time (target ripple)
 +#define COOP_PWB_SPEED			17	// forcePowersActive & FP_SPEED (blur trail)
++// jk2coop round 33: who is friend or foe, for a joiner's crosshair colour
++// (CG_DrawCrosshair): bits 20-22 = playerTeam + 1 (characters) or noDamageTeam
++// + 1 (turrets), bit 23 = SVF_NONNPC_ENEMY (turrets that count as enemies)
++#define COOP_PWB_TEAM_SHIFT		20
++#define COOP_PWB_TEAM_MASK		( 7 << COOP_PWB_TEAM_SHIFT )
++#define COOP_PWB_NONNPC_ENEMY	23
 +
  #define PW_REMOVE_AT_DEATH ((1<<PW_QUAD)|(1<<PW_BATTLESUIT)|(1<<PW_HASTE)|(1<<PW_CLOAKED)|(1<<PW_UNCLOAKING)|(1<<PW_UNCLOAKING)|(1<<PW_GALAK_SHIELD)|(1<<PW_DISINT_2)|(1<<PW_INVINCIBLE)|(1<<PW_SEEKER))
  // entityState_t->event values
  // entity events are for effects that take place relative
-@@ -438,9 +448,18 @@ typedef enum {
+@@ -438,9 +454,18 @@ typedef enum {
  
  	EV_DEBUG_LINE,
  
@@ -3706,7 +4916,7 @@ index 64bdfb6..287e293 100644
  class animation_t
  {
  public:
-@@ -676,4 +695,18 @@ void PlayerStateToEntityState( playerState_t *ps, entityState_t *s );
+@@ -676,4 +701,32 @@ void PlayerStateToEntityState( playerState_t *ps, entityState_t *s );
  
  qboolean	BG_PlayerTouchesItem( playerState_t *ps, entityState_t *item, int atTime );
  
@@ -3723,6 +4933,20 @@ index 64bdfb6..287e293 100644
 +// puts the slot in the mover's s.time2; see G_CoopSoundSetIndex (g_utils.cpp)
 +// and CG_CoopBModelSound (cg_ents.cpp).
 +#define COOP_BMSET_PREFIX		"*bmset "
++// jk2coop round 31: slot 0 of that table (never used by the NPC voice / sound
++// set allocators, which start at 1) is the campaign state for joiners, an info
++// string: "o" = one char per objective ('0' + display*4 + status), "mf" =
++// mission-failed text index, "ms" = mission status screen up, "cam" = entity
++// number of the host's cutscene camera (-1 = none). See G_CoopCampaignSync
++// (g_main.cpp) and CG_CoopCampaignFrame (cg_view.cpp).
++#define CS_COOP_STATE			CS_COOP_NPCVOICE
++// STAT_COOP_VIEWKIND values (low 8 bits)
++#define COOP_VIEW_NONE			0
++#define COOP_VIEW_CAMERA		1	// misc_camera, working
++#define COOP_VIEW_CAMERA_DEAD	2	// misc_camera, shot out
++#define COOP_VIEW_PANEL_TURRET	3	// misc_panel_turret
++#define COOP_VIEW_NPC			4	// a droid / NPC being driven (bits 8-15 = its FOV)
++#define COOP_VIEW_OTHER			5
 +
  #endif//#ifndef __BG_PUBLIC_H__
 \ No newline at end of file
@@ -3813,10 +5037,61 @@ index d75076c..84cbb34 100644
  
  /*
 diff --git a/codeJK2/game/g_active.cpp b/codeJK2/game/g_active.cpp
-index 2b0a446..51b19a4 100644
+index 2b0a446..97a96da 100644
 --- a/codeJK2/game/g_active.cpp
 +++ b/codeJK2/game/g_active.cpp
-@@ -1699,13 +1699,21 @@ extern void ChangeWeapon( gentity_t *ent, int newWeapon );
+@@ -182,7 +182,10 @@ qboolean G_ClearViewEntity( gentity_t *ent )
+ 				g_entities[ent->client->ps.viewEntity].NPC->desiredYaw = g_entities[ent->client->ps.viewEntity].currentAngles[YAW];
+ 			}
+ 		}
+-		CG_SetClientViewAngles( ent->pos4, qtrue );
++		if ( !ent->s.number )
++		{// jk2coop: the host's own game -- a joiner's view angles live in its own game
++			CG_SetClientViewAngles( ent->pos4, qtrue );
++		}
+ 		SetClientViewAngle( ent, ent->pos4 );
+ 	}
+ 	ent->client->ps.viewEntity = 0;
+@@ -212,7 +215,16 @@ void G_SetViewEntity( gentity_t *self, gentity_t *viewEntity )
+ 	viewEntity->svFlags |= SVF_BROADCAST;
+ 	//remember current angles
+ 	VectorCopy( self->client->ps.viewangles, self->pos4 );
+-	if ( viewEntity->client )
++	if ( viewEntity->client && self->s.number )
++	{// jk2coop round 31: a joiner takes over a droid/NPC. Its usercmd angles now
++	 // steer that NPC (ClientThink copies them over), so line the NPC's delta
++	 // angles up with them: no snap to wherever the joiner happened to look.
++		for ( int i = 0; i < 3; i++ )
++		{
++			viewEntity->client->ps.delta_angles[i] = ( ANGLE2SHORT( viewEntity->client->ps.viewangles[i] ) - self->client->usercmd.angles[i] ) & 0xffff;
++		}
++	}
++	else if ( viewEntity->client )
+ 	{
+ 		//vec3_t	clear = {0,0,0};
+ 		CG_SetClientViewAngles( viewEntity->client->ps.viewangles, qtrue );
+@@ -230,14 +242,18 @@ void G_SetViewEntity( gentity_t *self, gentity_t *viewEntity )
+ 	{
+ 		CG_CenterPrint( "@INGAME_EXIT_VIEW", SCREEN_HEIGHT * 0.95 );
+ 	}
++	else if ( G_IsCoopPlayer( self ) )
++	{
++		G_CoopCenterPrint( self, "cp \"@INGAME_EXIT_VIEW\"" );
++	}
+ }
+ 
+ qboolean G_ControlledByPlayer( gentity_t *self )
+ {
+ 	if ( self && self->NPC && self->NPC->controlledTime > level.time )
+ 	{//being controlled
+-		gentity_t *controller = &g_entities[0];
+-		if ( controller->client && controller->client->ps.viewEntity == self->s.number )
++		gentity_t *controller = G_CoopViewer( self );	// jk2coop: any player
++		if ( controller && controller->client && controller->client->ps.viewEntity == self->s.number )
+ 		{//we're the player's viewEntity
+ 			return qtrue;
+ 		}
+@@ -1699,13 +1715,21 @@ extern void ChangeWeapon( gentity_t *ent, int newWeapon );
  	else
  	{
  extern void CG_ChangeWeapon( int num );
@@ -3840,7 +5115,7 @@ index 2b0a446..51b19a4 100644
  			{
  				gi.cvar_set( "cg_thirdperson", "1" );
  			}
-@@ -1854,7 +1862,12 @@ void G_CheckClientIdle( gentity_t *ent, usercmd_t *ucmd )
+@@ -1854,7 +1878,12 @@ void G_CheckClientIdle( gentity_t *ent, usercmd_t *ucmd )
  	{
  		return;
  	}
@@ -3854,7 +5129,7 @@ index 2b0a446..51b19a4 100644
  	{
  		if ( ent->client->idleTime < level.time )
  		{
-@@ -1990,6 +2003,55 @@ void ClientThink_real( gentity_t *ent, usercmd_t *ucmd )
+@@ -1990,6 +2019,88 @@ void ClientThink_real( gentity_t *ent, usercmd_t *ucmd )
  	qboolean	inSpinFlipAttack = PM_AdjustAnglesForSpinningFlip( ent, ucmd, qfalse );
  	qboolean	controlledByPlayer = qfalse;
  
@@ -3876,10 +5151,21 @@ index 2b0a446..51b19a4 100644
 +	if ( ent->s.number != 0 && G_IsCoopPlayer( ent ) )
 +	{
 +		static qboolean	s_coopCamNotarget[MAX_CLIENTS];
++		static qboolean	s_coopCamNonSolid[MAX_CLIENTS];
++		static int		s_coopCamButtons[MAX_CLIENTS];
 +		const int		slot = ent->s.number;
 +
 +		if ( in_camera && ent->health > 0 )
 +		{
++			// jk2coop round 31: a joiner pressing USE skips the cutscene, like
++			// the host can (G_StartCinematicSkip runs the level's skip script)
++			extern cvar_t *g_skippingcin;
++			const int pressed = ucmd->buttons & ~s_coopCamButtons[slot];
++			s_coopCamButtons[slot] = ucmd->buttons;
++			if ( ( pressed & BUTTON_USE ) && g_skippingcin && !g_skippingcin->integer )
++			{
++				G_StartCinematicSkip();
++			}
 +			ucmd->forwardmove = 0;
 +			ucmd->rightmove = 0;
 +			ucmd->upmove = 0;
@@ -3889,11 +5175,33 @@ index 2b0a446..51b19a4 100644
 +				ent->flags |= FL_NOTARGET;
 +				s_coopCamNotarget[slot] = qtrue;
 +			}
++			// jk2coop round 31: the host is non-solid in a cutscene (CGCam_Enable);
++			// a solid joiner standing on an actor's path (or a lift's) held the
++			// scene forever, waiting for that actor to arrive (valley cinematic10:
++			// Kyle walking to his first mark) -- likely the intro cutscenes that
++			// stalled in the level crawl
++			if ( ent->contents & CONTENTS_BODY )
++			{
++				ent->contents &= ~CONTENTS_BODY;
++				s_coopCamNonSolid[slot] = qtrue;
++			}
 +		}
-+		else if ( s_coopCamNotarget[slot] )
++		else
 +		{
-+			ent->flags &= ~FL_NOTARGET;
-+			s_coopCamNotarget[slot] = qfalse;
++			s_coopCamButtons[slot] = ucmd->buttons;
++			if ( s_coopCamNotarget[slot] )
++			{
++				ent->flags &= ~FL_NOTARGET;
++				s_coopCamNotarget[slot] = qfalse;
++			}
++			if ( s_coopCamNonSolid[slot] )
++			{
++				if ( ent->health > 0 )
++				{
++					ent->contents |= CONTENTS_BODY;
++				}
++				s_coopCamNonSolid[slot] = qfalse;
++			}
 +		}
 +	}
 +
@@ -3910,7 +5218,31 @@ index 2b0a446..51b19a4 100644
  	//Don't let the player do anything if in a camera
  	if ( ent->s.number == 0 )
  	{
-@@ -2659,6 +2721,18 @@ extern cvar_t	*g_skipIntroCinematics;
+@@ -2169,11 +2280,12 @@ extern cvar_t	*g_skipIntroCinematics;
+ 		{
+ 			G_UpdateEmplacedWeaponData( ent );
+ 		}
+-		if ( player && player->client && player->client->ps.viewEntity == ent->s.number )
++		gentity_t *viewer = G_CoopViewer( ent );	// jk2coop round 31: host or joiner
++		if ( viewer && viewer->client )
+ 		{
+ 			controlledByPlayer = qtrue;
+ 			int sav_weapon = ucmd->weapon;
+-			memcpy( ucmd, &player->client->usercmd, sizeof( usercmd_t ) );
++			memcpy( ucmd, &viewer->client->usercmd, sizeof( usercmd_t ) );
+ 			ucmd->weapon = sav_weapon;
+ 			ent->client->usercmd = *ucmd;
+ 		}
+@@ -2457,7 +2569,7 @@ extern cvar_t	*g_skipIntroCinematics;
+ 					}
+ 
+ 					client->ps.speed = ent->NPC->currentSpeed;
+-					if ( player && player->client && player->client->ps.viewEntity == ent->s.number )
++					if ( G_CoopViewer( ent ) )
+ 					{
+ 					}
+ 					else
+@@ -2659,6 +2771,18 @@ extern cvar_t	*g_skipIntroCinematics;
  		client->ps.speed *= 0.75;
  	}
  
@@ -3929,7 +5261,30 @@ index 2b0a446..51b19a4 100644
  	//FIXME: need to do this before check to avoid walls and cliffs (or just cliffs?)
  	BG_AddPushVecToUcmd( ent, ucmd );
  
-@@ -3005,6 +3079,10 @@ void ClientThink( int clientNum, usercmd_t *ucmd ) {
+@@ -2687,7 +2811,12 @@ extern cvar_t	*g_skipIntroCinematics;
+ 	}
+ 
+ 	//NEED to do this every frame, since these overrides do not go into the save/load data
+-	if ( ent->client->ps.vehicleModel != 0 )
++	// jk2coop round 31: cg.overrides is the HOST's camera -- a joiner in an
++	// AT-ST was moving the host's view (the joiner's game does its own)
++	if ( ent->s.number )
++	{
++	}
++	else if ( ent->client->ps.vehicleModel != 0 )
+ 	{
+ 		cg.overrides.active |= (CG_OVERRIDE_3RD_PERSON_RNG|CG_OVERRIDE_FOV);
+ 		cg.overrides.thirdPersonRange = 240;
+@@ -2927,7 +3056,7 @@ void ClientThink( int clientNum, usercmd_t *ucmd ) {
+ 
+ 	ent = g_entities + clientNum;
+ 
+-	if ( !ent->s.number )
++	if ( G_IsCoopPlayer( ent ) )	// jk2coop round 31: joiners drive droids/turrets and leave the AT-ST too
+ 	{
+ 		if ( ent->client->ps.viewEntity > 0 && ent->client->ps.viewEntity < ENTITYNUM_WORLD )
+ 		{//you're controlling another NPC
+@@ -3005,6 +3134,10 @@ void ClientThink( int clientNum, usercmd_t *ucmd ) {
  		}
  		PM_CheckForceUseButton( ent, ucmd );
  	}
@@ -4085,7 +5440,7 @@ index 711ae7f..ea0505e 100644
  	self->takedamage = qfalse;//stop chain reaction runaway loops
  
 diff --git a/codeJK2/game/g_client.cpp b/codeJK2/game/g_client.cpp
-index 45db8b7..6a5cc80 100644
+index 45db8b7..a03f48f 100644
 --- a/codeJK2/game/g_client.cpp
 +++ b/codeJK2/game/g_client.cpp
 @@ -716,6 +716,22 @@ void ClientBegin( int clientNum, usercmd_t *cmd, SavedGameJustLoaded_e eSavedGam
@@ -4111,7 +5466,60 @@ index 45db8b7..6a5cc80 100644
  		G_InitGentity( ent );
  		ent->e_TouchFunc = touchF_NULL;
  		ent->e_PainFunc  = painF_PlayerPain;//painF_NULL;
-@@ -1911,6 +1927,25 @@ qboolean ClientSpawn(gentity_t *ent, SavedGameJustLoaded_e eSavedGameJustLoaded
+@@ -1564,6 +1580,12 @@ void G_DriveATST( gentity_t *ent, gentity_t *atst )
+ 		ent->client->ps.stats[STAT_WEAPONS] &= ~(( 1 << WP_ATST_MAIN )|( 1 << WP_ATST_SIDE ));
+ 		ent->client->ps.ammo[weaponData[WP_ATST_MAIN].ammoIndex] = 0;
+ 		ent->client->ps.ammo[weaponData[WP_ATST_SIDE].ammoIndex] = 0;
++		if ( ent->s.number )
++		{// jk2coop round 31: a joiner -- its own game picks the weapon and resets its camera
++			G_CoopCenterPrint( ent, va( "coopweapon %d", WP_BRYAR_PISTOL ) );
++		}
++		else
++		{
+ 		CG_ChangeWeapon( WP_BRYAR_PISTOL );
+ 		//camera
+ 		//if ( ent->client->ps.weapon != WP_SABER )
+@@ -1573,6 +1595,7 @@ void G_DriveATST( gentity_t *ent, gentity_t *atst )
+ 		cg.overrides.active &= ~(CG_OVERRIDE_3RD_PERSON_RNG|CG_OVERRIDE_3RD_PERSON_VOF|CG_OVERRIDE_3RD_PERSON_POF|CG_OVERRIDE_3RD_PERSON_APH);
+ 		cg.overrides.thirdPersonRange = cg.overrides.thirdPersonVertOffset = cg.overrides.thirdPersonPitchOffset = 0;
+ 		cg.overrides.thirdPersonAlpha = cg_thirdPersonAlpha.value;
++		}
+ 		ent->client->ps.viewheight = ent->maxs[2] + STANDARD_VIEWHEIGHT_OFFSET;
+ 		//ent->mass = 10;
+ 	}
+@@ -1622,7 +1645,14 @@ void G_DriveATST( gentity_t *ent, gentity_t *atst )
+ 		ent->client->ps.stats[STAT_WEAPONS] |= ( 1 << WP_ATST_MAIN )|( 1 << WP_ATST_SIDE );
+ 		ent->client->ps.ammo[weaponData[WP_ATST_MAIN].ammoIndex] = ammoData[weaponData[WP_ATST_MAIN].ammoIndex].max;
+ 		ent->client->ps.ammo[weaponData[WP_ATST_SIDE].ammoIndex] = ammoData[weaponData[WP_ATST_SIDE].ammoIndex].max;
+-		CG_ChangeWeapon( WP_ATST_MAIN );
++		if ( ent->s.number )
++		{// jk2coop round 31: tell the joiner's game to pick the AT-ST guns
++			G_CoopCenterPrint( ent, va( "coopweapon %d", WP_ATST_MAIN ) );
++		}
++		else
++		{
++			CG_ChangeWeapon( WP_ATST_MAIN );
++		}
+ 		//HACKHACKHACKTEMP
+ 		item = FindItemForWeapon( WP_EMPLACED_GUN );
+ 		CG_RegisterItemSounds( (item-bg_itemlist) );
+@@ -1636,9 +1666,12 @@ void G_DriveATST( gentity_t *ent, gentity_t *atst )
+ 		//HACKHACKHACKTEMP
+ 		//FIXME: these get lost in load/save!  Must use variables that are set every frame or saved/loaded
+ 		//camera
+-		gi.cvar_set( "cg_thirdperson", "1" );
+-		cg.overrides.active |= CG_OVERRIDE_3RD_PERSON_RNG;
+-		cg.overrides.thirdPersonRange = 240;
++		if ( !ent->s.number )	// jk2coop: the host's own camera; a joiner's game does this itself
++		{
++			gi.cvar_set( "cg_thirdperson", "1" );
++			cg.overrides.active |= CG_OVERRIDE_3RD_PERSON_RNG;
++			cg.overrides.thirdPersonRange = 240;
++		}
+ 		//cg.overrides.thirdPersonVertOffset = 100;
+ 		//cg.overrides.thirdPersonPitchOffset = -30;
+ 		//FIXME: this gets stomped in pmove?
+@@ -1911,6 +1944,25 @@ qboolean ClientSpawn(gentity_t *ent, SavedGameJustLoaded_e eSavedGameJustLoaded
  		ICARUS_FreeEnt( ent );	//FIXME: This shouldn't need to be done...?
  		ICARUS_InitEnt( ent );
  
@@ -4137,9 +5545,22 @@ index 45db8b7..6a5cc80 100644
  		if ( spawnPoint->spawnflags & 64 )
  		{//player starts with absolutely no weapons
  			ent->client->ps.stats[STAT_WEAPONS] = ( 1 << WP_NONE );
-@@ -1987,6 +2022,17 @@ void ClientDisconnect( int clientNum ) {
+@@ -1986,7 +2038,30 @@ void ClientDisconnect( int clientNum ) {
+ 		TossClientItems ( ent );
  	}
  */
++	if ( clientNum != 0 && ent->inuse )
++	{// jk2coop round 31: a joiner leaving while looking through a camera /
++	 // driving a droid, or sitting in an AT-ST, gives it back to the level
++		extern qboolean G_ClearViewEntity( gentity_t *ent );
++		G_ClearViewEntity( ent );
++		if ( ( ent->client->ps.eFlags & EF_IN_ATST ) && ent->activator && ent->activator->inuse )
++		{
++			ent->client->ps.legsAnim = BOTH_STAND1;	// the AT-ST only lets you out standing still
++			GEntity_UseFunc( ent->activator, ent, ent );
++		}
++		G_CoopDownClear( clientNum );
++	}
  	gi.unlinkentity (ent);
 +	if ( clientNum != 0 )
 +	{// jk2coop: a joiner leaving while seated in an emplaced gun must free it,
@@ -4259,7 +5680,7 @@ index ff0ed59..71007cb 100644
  	}
  	else if (Q_stricmp (cmd, "victory") == 0)
 diff --git a/codeJK2/game/g_combat.cpp b/codeJK2/game/g_combat.cpp
-index 3a35dbf..2dfaf0f 100644
+index 3a35dbf..35a50ef 100644
 --- a/codeJK2/game/g_combat.cpp
 +++ b/codeJK2/game/g_combat.cpp
 @@ -3484,7 +3484,7 @@ extern void RunEmplacedWeapon( gentity_t *ent, usercmd_t **ucmd );
@@ -4271,6 +5692,22 @@ index 3a35dbf..2dfaf0f 100644
  		{
  			if ( self->client )
  			{//killed a client
+@@ -3681,11 +3681,11 @@ extern void RunEmplacedWeapon( gentity_t *ent, usercmd_t **ucmd );
+ 	}
+ 	VectorCopy( self->currentAngles, self->client->ps.viewangles );
+ 	//FACING==========================================================
+-	if ( player && player->client && player->client->ps.viewEntity == self->s.number )
+-	{//I was the player's viewentity and I died, kick him back to his normal view
+-		G_ClearViewEntity( player );
++	if ( G_CoopViewer( self ) )
++	{//I was the player's viewentity and I died, kick him back to his normal view (jk2coop: host or joiner)
++		G_ClearViewEntity( G_CoopViewer( self ) );
+ 	}
+-	else if ( !self->s.number && self->client->ps.viewEntity > 0 && self->client->ps.viewEntity < ENTITYNUM_NONE )
++	else if ( G_IsCoopPlayer( self ) && self->client->ps.viewEntity > 0 && self->client->ps.viewEntity < ENTITYNUM_NONE )
+ 	{
+ 		G_ClearViewEntity( self );
+ 	}
 @@ -4089,7 +4089,7 @@ extern void RunEmplacedWeapon( gentity_t *ent, usercmd_t **ucmd );
  			}
  		}
@@ -4316,7 +5753,18 @@ index 3a35dbf..2dfaf0f 100644
  	{//player less likely to be knocked down
  		if ( !g_spskill->integer )
  		{//never in easy
-@@ -4611,7 +4611,7 @@ static void G_FriendlyFireReaction( gentity_t *self, gentity_t *other, int dflag
+@@ -4603,15 +4603,16 @@ static int G_CheckForLedge( gentity_t *self, vec3_t fallCheckDir, float checkDis
+ 
+ static void G_FriendlyFireReaction( gentity_t *self, gentity_t *other, int dflags )
+ {
+-	if ( (!player->client->ps.viewEntity || other->s.number != player->client->ps.viewEntity))
++	const qboolean otherIsControlled = (qboolean)( G_CoopViewer( other ) != NULL );	// jk2coop round 31: by any player
++	if ( !otherIsControlled )
+ 	{//hit by a teammate
+ 		if ( other != self->enemy && self != other->enemy )
+ 		{//we weren't already enemies
+-			if ( self->enemy || other->enemy || (other->s.number&&other->s.number!=player->client->ps.viewEntity) )
++			if ( self->enemy || other->enemy || (!G_IsCoopPlayer( other ) && !otherIsControlled) )
  			{//if one of us actually has an enemy already, it's okay, just an accident OR wasn't hit by player or someone controlled by player OR player hit ally and didn't get 25% chance of getting mad (FIXME:accumulate anger+base on diff?)
  				return;
  			}
@@ -4325,7 +5773,7 @@ index 3a35dbf..2dfaf0f 100644
  			{//dammit, stop that!
  				if ( !(dflags&DAMAGE_RADIUS) )
  				{
-@@ -4658,7 +4658,7 @@ float damageModifier[HL_MAX] =
+@@ -4658,7 +4659,7 @@ float damageModifier[HL_MAX] =
  
  void G_TrackWeaponUsage( gentity_t *self, gentity_t *inflictor, int add, int mod )
  {
@@ -4334,7 +5782,7 @@ index 3a35dbf..2dfaf0f 100644
  	{//player only
  		return;
  	}
-@@ -4798,6 +4798,10 @@ void G_Damage( gentity_t *targ, gentity_t *inflictor, gentity_t *attacker, vec3_
+@@ -4798,6 +4799,10 @@ void G_Damage( gentity_t *targ, gentity_t *inflictor, gentity_t *attacker, vec3_
  	if (!targ->takedamage) {
  		return;
  	}
@@ -4345,7 +5793,7 @@ index 3a35dbf..2dfaf0f 100644
  
  	if ( targ->health <= 0 && !targ->client )
  	{	// allow corpses to be disintegrated
-@@ -4806,7 +4810,7 @@ void G_Damage( gentity_t *targ, gentity_t *inflictor, gentity_t *attacker, vec3_
+@@ -4806,7 +4811,7 @@ void G_Damage( gentity_t *targ, gentity_t *inflictor, gentity_t *attacker, vec3_
  	}
  
  	// if we are the player and we are locked to an emplaced gun, we have to reroute damage to the gun....sigh.
@@ -4354,7 +5802,7 @@ index 3a35dbf..2dfaf0f 100644
  	{
  		// swapping the gun into our place to absorb our damage
  		targ = targ->owner;
-@@ -4865,7 +4869,7 @@ void G_Damage( gentity_t *targ, gentity_t *inflictor, gentity_t *attacker, vec3_
+@@ -4865,7 +4870,7 @@ void G_Damage( gentity_t *targ, gentity_t *inflictor, gentity_t *attacker, vec3_
  	client = targ->client;
  
  	if ( client ) {
@@ -4363,7 +5811,7 @@ index 3a35dbf..2dfaf0f 100644
  			return;
  		}
  	}
-@@ -4884,7 +4888,7 @@ void G_Damage( gentity_t *targ, gentity_t *inflictor, gentity_t *attacker, vec3_
+@@ -4884,7 +4889,7 @@ void G_Damage( gentity_t *targ, gentity_t *inflictor, gentity_t *attacker, vec3_
  		VectorNormalize2( dir, newDir );
  	}
  
@@ -4372,7 +5820,7 @@ index 3a35dbf..2dfaf0f 100644
  	{//not the player
  		if ( (targ->flags&FL_GODMODE) || (targ->flags&FL_UNDYING) )
  		{//have god or undying on, so ignore no protection flag
-@@ -4896,7 +4900,7 @@ void G_Damage( gentity_t *targ, gentity_t *inflictor, gentity_t *attacker, vec3_
+@@ -4896,7 +4901,7 @@ void G_Damage( gentity_t *targ, gentity_t *inflictor, gentity_t *attacker, vec3_
  	{
  		dflags |= DAMAGE_NO_KNOCKBACK;
  	}
@@ -4381,7 +5829,7 @@ index 3a35dbf..2dfaf0f 100644
  	{//player doesn't do knockback against allies unless he kills them
  		dflags |= DAMAGE_DEATH_KNOCKBACK;
  	}
-@@ -5117,7 +5121,7 @@ void G_Damage( gentity_t *targ, gentity_t *inflictor, gentity_t *attacker, vec3_
+@@ -5117,7 +5122,7 @@ void G_Damage( gentity_t *targ, gentity_t *inflictor, gentity_t *attacker, vec3_
  		alreadyDead = qtrue;
  	}
  
@@ -4390,7 +5838,31 @@ index 3a35dbf..2dfaf0f 100644
  	{
  		if ( !alreadyDead )
  		{
-@@ -5193,7 +5197,7 @@ void G_Damage( gentity_t *targ, gentity_t *inflictor, gentity_t *attacker, vec3_
+@@ -5161,9 +5166,9 @@ void G_Damage( gentity_t *targ, gentity_t *inflictor, gentity_t *attacker, vec3_
+ 			team_t		targTeam = TEAM_FREE;
+ 			team_t		attackerTeam = TEAM_FREE;
+ 
+-			if ( player->client->ps.viewEntity && targ->s.number == player->client->ps.viewEntity )
++			if ( G_CoopViewer( targ ) )	// jk2coop round 31: controlled by any player
+ 			{
+-				targTeam = player->client->playerTeam;
++				targTeam = G_CoopViewer( targ )->client->playerTeam;
+ 			}
+ 			else if ( targ->client ) {
+ 				targTeam = targ->client->playerTeam;
+@@ -5174,9 +5179,9 @@ void G_Damage( gentity_t *targ, gentity_t *inflictor, gentity_t *attacker, vec3_
+ 		//	if ( targTeam == TEAM_DISGUISE ) {
+ 		//		targTeam = TEAM_PLAYER;
+ 		//	}
+-			if ( player->client->ps.viewEntity && attacker->s.number == player->client->ps.viewEntity )
++			if ( G_CoopViewer( attacker ) )	// jk2coop round 31: controlled by any player
+ 			{
+-				attackerTeam = player->client->playerTeam;
++				attackerTeam = G_CoopViewer( attacker )->client->playerTeam;
+ 			}
+ 			else if ( attacker->client ) {
+ 				attackerTeam = attacker->client->playerTeam;
+@@ -5193,7 +5198,7 @@ void G_Damage( gentity_t *targ, gentity_t *inflictor, gentity_t *attacker, vec3_
  				targ->health = targ->health - take;
  
  				//MCG - Falling should never kill player- only if a trigger_hurt does so.
@@ -4399,7 +5871,7 @@ index 3a35dbf..2dfaf0f 100644
  				{
  					targ->health = 1;
  				}
-@@ -5221,7 +5225,7 @@ void G_Damage( gentity_t *targ, gentity_t *inflictor, gentity_t *attacker, vec3_
+@@ -5221,7 +5226,7 @@ void G_Damage( gentity_t *targ, gentity_t *inflictor, gentity_t *attacker, vec3_
  				qboolean yellAtAttacker = qtrue;
  
  				//1) player doesn't take damage from teammates unless they're angry at him
@@ -4408,7 +5880,7 @@ index 3a35dbf..2dfaf0f 100644
  				{//the player
  					if ( attacker->enemy != targ && attacker != targ )
  					{//an NPC shot the player by accident
-@@ -5248,7 +5252,7 @@ void G_Damage( gentity_t *targ, gentity_t *inflictor, gentity_t *attacker, vec3_
+@@ -5248,7 +5253,7 @@ void G_Damage( gentity_t *targ, gentity_t *inflictor, gentity_t *attacker, vec3_
  				if ( takeDamage )
  				{
  					targ->health = targ->health - take;
@@ -4417,7 +5889,7 @@ index 3a35dbf..2dfaf0f 100644
  					{//guy is marked undying and we're not the player or we're in combat
  						if ( targ->health < 1 )
  						{
-@@ -5257,7 +5261,7 @@ void G_Damage( gentity_t *targ, gentity_t *inflictor, gentity_t *attacker, vec3_
+@@ -5257,7 +5262,7 @@ void G_Damage( gentity_t *targ, gentity_t *inflictor, gentity_t *attacker, vec3_
  							targ->health = 1;
  						}
  					}
@@ -4426,7 +5898,7 @@ index 3a35dbf..2dfaf0f 100644
  					{// player is undying and he's attacking himself, don't let him die
  						if ( targ->health < 1 )
  						{
-@@ -5269,7 +5273,7 @@ void G_Damage( gentity_t *targ, gentity_t *inflictor, gentity_t *attacker, vec3_
+@@ -5269,7 +5274,7 @@ void G_Damage( gentity_t *targ, gentity_t *inflictor, gentity_t *attacker, vec3_
  					else if ( targ->health < 0 )
  					{
  						targ->health = 0;
@@ -4435,7 +5907,7 @@ index 3a35dbf..2dfaf0f 100644
  						{
  							targ->NPC->scriptFlags |= SCF_FFDEATH;
  						}
-@@ -5286,6 +5290,13 @@ void G_Damage( gentity_t *targ, gentity_t *inflictor, gentity_t *attacker, vec3_
+@@ -5286,6 +5291,13 @@ void G_Damage( gentity_t *targ, gentity_t *inflictor, gentity_t *attacker, vec3_
  			}
  		}
  
@@ -4449,7 +5921,7 @@ index 3a35dbf..2dfaf0f 100644
  		if ( targ->client ) {
  			targ->client->ps.stats[STAT_HEALTH] = targ->health;
  			g_lastClientDamaged = targ;
-@@ -5293,7 +5304,7 @@ void G_Damage( gentity_t *targ, gentity_t *inflictor, gentity_t *attacker, vec3_
+@@ -5293,7 +5305,7 @@ void G_Damage( gentity_t *targ, gentity_t *inflictor, gentity_t *attacker, vec3_
  
  		//TEMP HACK FOR PLAYER LOOK AT ENEMY CODE
  		//FIXME: move this to a player pain func?
@@ -4458,7 +5930,7 @@ index 3a35dbf..2dfaf0f 100644
  		{
  			if ( !targ->enemy //player does not have an enemy yet
  				|| targ->enemy->s.weapon != WP_SABER //or player's enemy is not a jedi
-@@ -5307,7 +5318,7 @@ void G_Damage( gentity_t *targ, gentity_t *inflictor, gentity_t *attacker, vec3_
+@@ -5307,7 +5319,7 @@ void G_Damage( gentity_t *targ, gentity_t *inflictor, gentity_t *attacker, vec3_
  				NPC_SetLookTarget( targ, attacker->s.number, level.time+1000 );
  			}
  		}
@@ -4467,7 +5939,7 @@ index 3a35dbf..2dfaf0f 100644
  		{//this looks dumb when they're on the ground and you keep hitting them, so only do this when first kill them
  			if ( !OnSameTeam( targ, attacker ) )
  			{//don't set player's enemy to teammates that he hits by accident
-@@ -5372,7 +5383,7 @@ void G_Damage( gentity_t *targ, gentity_t *inflictor, gentity_t *attacker, vec3_
+@@ -5372,7 +5384,7 @@ void G_Damage( gentity_t *targ, gentity_t *inflictor, gentity_t *attacker, vec3_
  		else
  		{
  			GEntity_PainFunc( targ, inflictor, attacker, point, take, mod, hitLoc );
@@ -4565,10 +6037,10 @@ index 165e03e..cea6bd6 100644
  		GEntity_TouchFunc( ent, other, NULL );
  	}
 diff --git a/codeJK2/game/g_local.h b/codeJK2/game/g_local.h
-index 6d5dd1e..bc5144e 100644
+index 6d5dd1e..69dc396 100644
 --- a/codeJK2/game/g_local.h
 +++ b/codeJK2/game/g_local.h
-@@ -310,6 +310,52 @@ extern	cvar_t	*g_blasterDamage;
+@@ -310,6 +310,57 @@ extern	cvar_t	*g_blasterDamage;
  extern	cvar_t	*g_ICARUSDebug;
  
  extern gentity_t *player;
@@ -4594,6 +6066,8 @@ index 6d5dd1e..bc5144e 100644
 +// the connected (and, if requireAlive, living) human player closest to org;
 +// falls back to the host's entity so callers never get NULL
 +gentity_t	*G_CoopNearestPlayer( const vec3_t org, qboolean requireAlive );
++// round 31: the player looking through / controlling this entity, or NULL
++gentity_t	*G_CoopViewer( const gentity_t *viewed );
 +// free an emplaced gun a player is sitting in without the normal exit (g_weapon.cpp)
 +void		G_CoopReleaseEmplacedGun( gentity_t *user );
 +// round 8 (g_utils.cpp): center-print to the player who did something
@@ -4617,12 +6091,15 @@ index 6d5dd1e..bc5144e 100644
 +qboolean	G_CoopCrawlActive( void );
 +void		G_CoopCrawlFrame( void );
 +void		G_CoopCrawlReset( void );
++// round 31 (g_main.cpp): cutscene camera / campaign state for joiners
++// (g_coopCamView: cg_camera.h)
++void		G_CoopCampaignReset( void );
 +
  //
  // g_spawn.c
  //
 diff --git a/codeJK2/game/g_main.cpp b/codeJK2/game/g_main.cpp
-index ea818ef..c812e83 100644
+index ea818ef..1d07068 100644
 --- a/codeJK2/game/g_main.cpp
 +++ b/codeJK2/game/g_main.cpp
 @@ -139,6 +139,11 @@ public:
@@ -4637,7 +6114,7 @@ index ea818ef..c812e83 100644
  
  cvar_t	*g_speed;
  cvar_t	*g_gravity;
-@@ -639,6 +644,15 @@ void InitGame(  const char *mapname, const char *spawntarget, int checkSum, cons
+@@ -639,6 +644,16 @@ void InitGame(  const char *mapname, const char *spawntarget, int checkSum, cons
  
  	G_InitMemory();
  
@@ -4648,12 +6125,13 @@ index ea818ef..c812e83 100644
 +		memset( g_coopJoinPlaceTime, 0, sizeof( g_coopJoinPlaceTime ) );
 +		G_CoopDownReset();	// round 23: nobody is downed on a fresh level / loaded game
 +		G_CoopCrawlReset();	// round 24: level crawl bot starts over on every level
++		G_CoopCampaignReset();	// round 31: cutscene camera / campaign state for joiners
 +	}
 +
  	// set some level globals
  	memset( &level, 0, sizeof( level ) );
  	level.time = levelTime;
-@@ -1326,6 +1340,69 @@ int navTime = 0;
+@@ -1326,6 +1341,242 @@ int navTime = 0;
  #ifndef FINAL_BUILD
  extern int delayedShutDown;
  #endif
@@ -4677,7 +6155,8 @@ index ea818ef..c812e83 100644
 +		return;
 +	}
 +	const int coopBits = ( 1 << PW_FORCE_PUSH ) | ( 1 << COOP_PWB_GRIP ) | ( 1 << COOP_PWB_LIGHTNING )
-+		| ( 1 << COOP_PWB_LIGHTNING_WIDE ) | ( 1 << COOP_PWB_PUSHED ) | ( 1 << COOP_PWB_SPEED );
++		| ( 1 << COOP_PWB_LIGHTNING_WIDE ) | ( 1 << COOP_PWB_PUSHED ) | ( 1 << COOP_PWB_SPEED )
++		| COOP_PWB_TEAM_MASK | ( 1 << COOP_PWB_NONNPC_ENEMY );
 +	for ( int i = 0; i < ENTITYNUM_WORLD; i++ )
 +	{
 +		gentity_t *ent = &g_entities[i];
@@ -4689,6 +6168,19 @@ index ea818ef..c812e83 100644
 +		if ( ent->forcePushTime > level.time )
 +		{
 +			pw |= ( 1 << COOP_PWB_PUSHED );
++		}
++		// round 33: team, for the joiner's crosshair colour
++		if ( ent->client )
++		{
++			pw |= ( ( ent->client->playerTeam + 1 ) & 7 ) << COOP_PWB_TEAM_SHIFT;
++		}
++		else if ( ent->s.weapon == WP_TURRET )
++		{
++			pw |= ( ( ent->noDamageTeam + 1 ) & 7 ) << COOP_PWB_TEAM_SHIFT;
++			if ( ent->svFlags & SVF_NONNPC_ENEMY )
++			{
++				pw |= ( 1 << COOP_PWB_NONNPC_ENEMY );
++			}
 +		}
 +		if ( ent->client )
 +		{
@@ -4720,10 +6212,169 @@ index ea818ef..c812e83 100644
 +	}
 +}
 +
++/*
++================
++jk2coop round 31: campaign state, cutscenes and remote views for joiners
++
++Single player keeps the objectives (client 0's session), the mission-failed
++screen and the cutscene camera inside the host's own process, and a joiner's
++game never sees any of it: an empty datapad, no "Mission failed" text, and
++the player standing frozen in the world during cutscenes instead of watching
++them. Send them on:
++
++- G_CoopCampaignSync: objectives + mission status + the camera's entity
++  number in one configstring (CS_COOP_STATE), only when something changed.
++  Configstrings are part of the game state, so a late joiner gets them too.
++- G_CoopCutsceneSync: while the host's cutscene camera runs (or its black
++  bars / fade are still on screen) an invisible broadcast entity carries the
++  camera's final view each frame -- origin, angles, FOV, bar size, fade
++  colour. The joiner's game copies it into its own camera and so draws the
++  same shot with the same letterbox and HUD rules.
++- G_CoopViewKindSync: what each player looks through (security camera,
++  turret, droid), which the joiner's game can't tell from its empty copies of
++  those entities.
++================
++*/
++coopCamView_t	g_coopCamView;		// written by the host's cgame every frame (cg_view.cpp)
++static gentity_t	*s_coopCam = NULL;
++static char			s_coopStateLast[MAX_STRING_CHARS];
++
++void G_CoopCampaignReset( void )
++{
++	s_coopCam = NULL;		// the old level's entities are gone (level/g_entities get cleared)
++	s_coopStateLast[0] = 0;	// resend the state on the new level
++	memset( &g_coopCamView, 0, sizeof( g_coopCamView ) );
++}
++
++static void G_CoopCutsceneSync( void )
++{
++	const qboolean show = (qboolean)( G_CoopHasJoiners()
++		&& ( in_camera || client_camera.bar_alpha > 0.0f || client_camera.fade_color[3] > 0.0f ) );
++	if ( !show )
++	{
++		if ( s_coopCam )
++		{
++			if ( s_coopCam->inuse && !Q_stricmp( s_coopCam->classname, "coop_cutscene_cam" ) )
++			{
++				G_FreeEntity( s_coopCam );
++			}
++			s_coopCam = NULL;
++		}
++		return;
++	}
++	if ( !s_coopCam || !s_coopCam->inuse || Q_stricmp( s_coopCam->classname, "coop_cutscene_cam" ) )
++	{
++		s_coopCam = G_Spawn();
++		if ( !s_coopCam )
++		{
++			return;
++		}
++		s_coopCam->classname = "coop_cutscene_cam";
++		s_coopCam->s.eType = ET_INVISIBLE;
++		s_coopCam->svFlags |= SVF_BROADCAST;
++		s_coopCam->contents = 0;
++		s_coopCam->clipmask = 0;
++		VectorClear( s_coopCam->mins );
++		VectorClear( s_coopCam->maxs );
++		s_coopCam->s.modelindex = 0;
++	}
++	gentity_t *cam = s_coopCam;
++	const qboolean viewValid = (qboolean)( in_camera && g_coopCamView.valid );
++	if ( viewValid )
++	{
++		VectorCopy( g_coopCamView.origin, cam->s.pos.trBase );
++		VectorCopy( g_coopCamView.angles, cam->s.apos.trBase );
++		VectorCopy( g_coopCamView.origin, cam->currentOrigin );
++		cam->s.angles2[0] = g_coopCamView.fov;
++	}
++	cam->s.pos.trType = TR_INTERPOLATE;
++	cam->s.apos.trType = TR_INTERPOLATE;
++	VectorClear( cam->s.pos.trDelta );
++	VectorClear( cam->s.apos.trDelta );
++	cam->s.angles2[1] = client_camera.bar_alpha;
++	cam->s.angles2[2] = client_camera.bar_height;
++	cam->s.origin2[0] = client_camera.fade_color[0];
++	cam->s.origin2[1] = client_camera.fade_color[1];
++	cam->s.origin2[2] = client_camera.fade_color[2];
++	cam->s.time2 = (int)( client_camera.fade_color[3] * 1000.0f );
++	cam->s.time = viewValid ? 1 : 0;	// 0 = only the bars / fade are still showing
++	gi.linkentity( cam );
++}
++
++static void G_CoopCampaignSync( void )
++{
++	// round 33: test twin -- the gap test's "obj" check must fail without this
++	cvar_t *twin = gi.cvar( "coop_test_twin", "", 0 );
++	if ( twin && !Q_stricmp( twin->string, "obj" ) )
++	{
++		return;
++	}
++	char	objs[MAX_MISSION_OBJ + 1];
++	char	state[MAX_STRING_CHARS];
++	const objectives_t *o = level.clients ? level.clients[0].sess.mission_objectives : NULL;
++
++	for ( int i = 0; i < MAX_MISSION_OBJ; i++ )
++	{
++		int v = 0;
++		if ( o )
++		{
++			v = ( o[i].display ? 4 : 0 ) + ( o[i].status & 3 );
++		}
++		objs[i] = (char)( '0' + v );
++	}
++	objs[MAX_MISSION_OBJ] = 0;
++	Com_sprintf( state, sizeof( state ), "\\o\\%s\\mf\\%d\\ms\\%d\\cam\\%d",
++		objs, statusTextIndex, cg.missionStatusShow ? 1 : 0,
++		( s_coopCam && s_coopCam->inuse ) ? s_coopCam->s.number : -1 );
++	if ( strcmp( state, s_coopStateLast ) )
++	{
++		Q_strncpyz( s_coopStateLast, state, sizeof( s_coopStateLast ) );
++		gi.SetConfigstring( CS_COOP_STATE, state );
++	}
++}
++
++static void G_CoopViewKindSync( void )
++{
++	for ( int i = 0; i < MAX_CLIENTS; i++ )
++	{
++		gentity_t *ent = &g_entities[i];
++		if ( !ent->inuse || !ent->client || ent->NPC )
++		{
++			continue;
++		}
++		int kind = COOP_VIEW_NONE;
++		const int ve = ent->client->ps.viewEntity;
++		if ( ve > 0 && ve < ENTITYNUM_WORLD && g_entities[ve].inuse )
++		{
++			gentity_t *v = &g_entities[ve];
++			if ( v->classname && !Q_stricmp( v->classname, "misc_camera" ) )
++			{
++				kind = v->health > 0 ? COOP_VIEW_CAMERA : COOP_VIEW_CAMERA_DEAD;
++			}
++			else if ( v->classname && !Q_stricmp( v->classname, "misc_panel_turret" ) )
++			{
++				kind = COOP_VIEW_PANEL_TURRET;
++			}
++			else if ( v->client && v->NPC )
++			{
++				int fov = (int)v->NPC->stats.hfov;
++				if ( fov > 120 ) fov = 120;
++				if ( fov < 10 ) fov = 10;
++				kind = COOP_VIEW_NPC | ( fov << 8 );
++			}
++			else
++			{
++				kind = COOP_VIEW_OTHER;
++			}
++		}
++		ent->client->ps.stats[STAT_COOP_VIEWKIND] = kind;
++	}
++}
++
  void G_RunFrame( int levelTime ) {
  	int			i;
  	gentity_t	*ent;
-@@ -1434,6 +1511,27 @@ void G_RunFrame( int levelTime ) {
+@@ -1434,6 +1685,27 @@ void G_RunFrame( int levelTime ) {
  		}
  		G_CheckSpecialPersistentEvents( ent );
  
@@ -4751,7 +6402,7 @@ index ea818ef..c812e83 100644
  		if ( ent->s.eType == ET_MISSILE )
  		{
  			G_RunMissile( ent );
-@@ -1456,6 +1554,87 @@ void G_RunFrame( int levelTime ) {
+@@ -1456,6 +1728,87 @@ void G_RunFrame( int levelTime ) {
  			continue;
  		}
  
@@ -4839,7 +6490,7 @@ index ea818ef..c812e83 100644
  		//The player
  		if ( i == 0 )
  		{
-@@ -1505,6 +1684,27 @@ void G_RunFrame( int levelTime ) {
+@@ -1505,6 +1858,34 @@ void G_RunFrame( int levelTime ) {
  	{
  		ClientEndFrame( ent );
  	}
@@ -4864,14 +6515,96 @@ index ea818ef..c812e83 100644
 +	G_CoopCrawlFrame();
 +	// jk2coop round 22: Force effects joiners have to draw
 +	G_CoopForceFxSync();
++	// jk2coop round 31: cutscene camera, objectives, mission status, remote views
++	if ( !cg_remoteClient )
++	{
++		G_CoopCutsceneSync();
++		G_CoopCampaignSync();
++		G_CoopViewKindSync();
++	}
  	if( g_numEntities->integer )
  	{
  		gi.Printf( S_COLOR_WHITE"Number of Entities in use : %d\n", ents_inuse );
 diff --git a/codeJK2/game/g_misc.cpp b/codeJK2/game/g_misc.cpp
-index 30af0d7..d4c027d 100644
+index 30af0d7..fe8ddd1 100644
 --- a/codeJK2/game/g_misc.cpp
 +++ b/codeJK2/game/g_misc.cpp
-@@ -1435,7 +1435,7 @@ void touch_ammo_crystal_tigger( gentity_t *self, gentity_t *other, trace_t *trac
+@@ -524,11 +524,12 @@ extern void G_SetViewEntity( gentity_t *self, gentity_t *viewEntity );
+ extern void SP_fx_runner( gentity_t *ent );
+ void camera_die( gentity_t *self, gentity_t *inflictor, gentity_t *attacker, int damage, int mod,int dFlags,int hitLoc )
+ {
+-	if ( player && player->client && player->client->ps.viewEntity == self->s.number )
++	gentity_t *viewer = G_CoopViewer( self );	// jk2coop round 31: whoever looks through it
++	if ( viewer )
+ 	{
+-		G_UseTargets2( self, player, self->target4 );
+-		G_ClearViewEntity( player );
+-		G_Sound( player, self->soundPos2 );
++		G_UseTargets2( self, viewer, self->target4 );
++		G_ClearViewEntity( viewer );
++		G_Sound( viewer, self->soundPos2 );
+ 	}
+ 	G_UseTargets2( self, player, self->closetarget );
+ 	//FIXME: explosion fx/sound
+@@ -553,14 +554,19 @@ void camera_die( gentity_t *self, gentity_t *inflictor, gentity_t *attacker, int
+ 
+ void camera_use( gentity_t *self, gentity_t *other, gentity_t *activator )
+ {
+-	if ( !activator || !activator->client || activator->s.number )
+-	{//really only usable by the player
++	if ( !activator || !activator->client || !G_IsCoopPlayer( activator ) )
++	{//really only usable by the player (jk2coop: any co-op player)
++		return;
++	}
++	gentity_t *viewer = G_CoopViewer( self );
++	if ( viewer && viewer != activator )
++	{// jk2coop: someone else is already looking through this camera
+ 		return;
+ 	}
+ 	self->painDebounceTime = level.time + (self->wait*1000);//FRAMETIME*5;//don't check for player buttons for 500 ms
+ 
+ 	// FIXME: I guess we are allowing them to switch to a dead camera.  Maybe we should conditionally do this though?
+-	if ( /*self->health <= 0 ||*/ (player && player->client && player->client->ps.viewEntity == self->s.number) )
++	if ( /*self->health <= 0 ||*/ (activator->client->ps.viewEntity == self->s.number) )
+ 	{//I'm already viewEntity, or I'm destroyed, find next
+ 		gentity_t *next = NULL;
+ 		if ( self->target2 != NULL )
+@@ -594,24 +600,25 @@ void camera_use( gentity_t *self, gentity_t *other, gentity_t *activator )
+ void camera_aim( gentity_t *self )
+ {
+ 	self->nextthink = level.time + FRAMETIME;
+-	if ( player && player->client && player->client->ps.viewEntity == self->s.number )
++	gentity_t *viewer = G_CoopViewer( self );	// jk2coop round 31: host or joiner
++	if ( viewer )
+ 	{//I am the viewEntity
+-		if ( (player->client->usercmd.buttons&BUTTON_BLOCKING) || player->client->usercmd.forwardmove || player->client->usercmd.rightmove || player->client->usercmd.upmove )
++		if ( (viewer->client->usercmd.buttons&BUTTON_BLOCKING) || viewer->client->usercmd.forwardmove || viewer->client->usercmd.rightmove || viewer->client->usercmd.upmove )
+ 		{//player wants to back out of camera
+-			G_UseTargets2( self, player, self->target4 );
+-			G_ClearViewEntity( player );
+-			G_Sound( player, self->soundPos2 );
++			G_UseTargets2( self, viewer, self->target4 );
++			G_ClearViewEntity( viewer );
++			G_Sound( viewer, self->soundPos2 );
+ 			self->painDebounceTime = level.time + (self->wait*1000);//FRAMETIME*5;//don't check for player buttons for 500 ms
+-			if ( player->client->usercmd.upmove > 0 )
++			if ( viewer->client->usercmd.upmove > 0 )
+ 			{//stop player from doing anything for a half second after
+-				player->aimDebounceTime = level.time + 500;
++				viewer->aimDebounceTime = level.time + 500;
+ 			}
+ 		}
+ 		else if ( self->painDebounceTime < level.time )
+ 		{//check for use button
+-			if ( (player->client->usercmd.buttons&BUTTON_USE) )
++			if ( (viewer->client->usercmd.buttons&BUTTON_USE) )
+ 			{//player pressed use button, wants to cycle to next
+-				camera_use( self, player, player );
++				camera_use( self, viewer, viewer );
+ 			}
+ 		}
+ 		else
+@@ -1435,7 +1442,7 @@ void touch_ammo_crystal_tigger( gentity_t *self, gentity_t *other, trace_t *trac
  		return;
  
  	// Only player can pick it up
@@ -4880,7 +6613,7 @@ index 30af0d7..d4c027d 100644
  	{
  		return;
  	}
-@@ -1846,7 +1846,7 @@ void shield_power_converter_use( gentity_t *self, gentity_t *other, gentity_t *a
+@@ -1846,7 +1853,7 @@ void shield_power_converter_use( gentity_t *self, gentity_t *other, gentity_t *a
  {
  	int dif,add;
  
@@ -4889,7 +6622,7 @@ index 30af0d7..d4c027d 100644
  	{
  		//only the player gets to use these
  		return;
-@@ -2034,7 +2034,7 @@ void ammo_power_converter_use( gentity_t *self, gentity_t *other, gentity_t *act
+@@ -2034,7 +2041,7 @@ void ammo_power_converter_use( gentity_t *self, gentity_t *other, gentity_t *act
  	int			difBlaster,difPowerCell,difMetalBolts;
  	playerState_t *ps;
  
@@ -4898,6 +6631,33 @@ index 30af0d7..d4c027d 100644
  	{//only the player gets to use these
  		return;
  	}
+@@ -2624,8 +2631,8 @@ extern void SetClientViewAngle( gentity_t *ent, vec3_t angle );
+ extern qboolean PM_InSlopeAnim( int anim );
+ void misc_atst_use( gentity_t *self, gentity_t *other, gentity_t *activator )
+ {
+-	if ( !activator || activator->s.number )
+-	{//only player can do this
++	if ( !activator || !G_IsCoopPlayer( activator ) )
++	{//only player can do this (jk2coop round 31: any co-op player)
+ 		return;
+ 	}
+ 
+@@ -2666,10 +2673,14 @@ void misc_atst_use( gentity_t *self, gentity_t *other, gentity_t *activator )
+ 			activator->locationDamage[hl] = self->locationDamage[hl];
+ 			self->locationDamage[hl] = tempLocDmg[hl];
+ 		}
+-		if ( !self->s.number )
++		if ( !activator->s.number )	// jk2coop: was `!self->s.number` (the AT-ST itself, never 0)
+ 		{
+ 			CG_CenterPrint( "@INGAME_EXIT_VIEW", SCREEN_HEIGHT * 0.95 );
+ 		}
++		else
++		{
++			G_CoopCenterPrint( activator, "cp \"@INGAME_EXIT_VIEW\"" );
++		}
+ 	}
+ 	else
+ 	{//get out of ATST
 diff --git a/codeJK2/game/g_missile.cpp b/codeJK2/game/g_missile.cpp
 index aa8d6c7..1cc80e1 100644
 --- a/codeJK2/game/g_missile.cpp
@@ -5190,7 +6950,7 @@ index 68b9ea5..65cbae2 100644
  		if (found)
  		{
 diff --git a/codeJK2/game/g_turret.cpp b/codeJK2/game/g_turret.cpp
-index 5e09128..4bab0e6 100644
+index 5e09128..b941ad2 100644
 --- a/codeJK2/game/g_turret.cpp
 +++ b/codeJK2/game/g_turret.cpp
 @@ -287,6 +287,13 @@ static void turret_aim( gentity_t *self )
@@ -5217,11 +6977,116 @@ index 5e09128..4bab0e6 100644
  
  	if ( moved )
  	{
+@@ -1940,25 +1950,35 @@ void panel_turret_shoot( gentity_t *self, vec3_t org, vec3_t dir)
+ //-----------------------------------------
+ void misc_panel_turret_die( gentity_t *self, gentity_t *inflictor, gentity_t *attacker, int damage, int mod, int dFlags, int hitLoc )
+ {
++	// jk2coop round 31: whoever is manning it (host or joiner); the host when nobody is
++	gentity_t *gunner = G_CoopViewer( self );
++	gentity_t *user = gunner ? gunner : player;
+ 	if ( self->target3 )
+ 	{
+-		G_UseTargets2( self, player, self->target3 );
++		G_UseTargets2( self, user, self->target3 );
+ 	}
+ 
+ 	// FIXME: might need some other kind of logic or functionality in here??
+-	G_UseTargets2( self, player, self->target2 );
+-	G_ClearViewEntity( player );
+-	cg.overrides.active &= ~CG_OVERRIDE_FOV;
+-	cg.overrides.fov = 0;
++	G_UseTargets2( self, user, self->target2 );
++	if ( gunner )
++	{
++		G_ClearViewEntity( gunner );
++	}
++	if ( !gunner || !gunner->s.number )
++	{
++		cg.overrides.active &= ~CG_OVERRIDE_FOV;
++		cg.overrides.fov = 0;
++	}
+ }
+ 
+ //-----------------------------------------
+ void panel_turret_think( gentity_t *self )
+ {
+ 	// Ensure that I am the viewEntity
+-	if ( player && player->client && player->client->ps.viewEntity == self->s.number )
++	gentity_t *gunner = G_CoopViewer( self );	// jk2coop round 31: host or joiner
++	if ( gunner )
+ 	{
+-		usercmd_t *ucmd = &player->client->usercmd;
++		usercmd_t *ucmd = &gunner->client->usercmd;
+ 
+ 		// We are the viewEnt so update our new viewangles based on the sum of our start angles and the ucmd angles
+ 		for ( int i = 0; i < 3; i++ )
+@@ -2010,15 +2030,18 @@ void panel_turret_think( gentity_t *self )
+ 		{
+ 			self->useDebounceTime = level.time + 200;
+ 
+-			G_UseTargets2( self, player, self->target2 );
+-			G_ClearViewEntity( player );
+-			G_Sound( player, self->soundPos2 );
++			G_UseTargets2( self, gunner, self->target2 );
++			G_ClearViewEntity( gunner );
++			G_Sound( gunner, self->soundPos2 );
+ 
+-			cg.overrides.active &= ~CG_OVERRIDE_FOV;
+-			cg.overrides.fov = 0;
++			if ( !gunner->s.number )
++			{// the host's own camera zoom (a joiner's game zooms by itself)
++				cg.overrides.active &= ~CG_OVERRIDE_FOV;
++				cg.overrides.fov = 0;
++			}
+ 			if ( ucmd->upmove > 0 )
+ 			{//stop player from doing anything for a half second after
+-				player->aimDebounceTime = level.time + 500;
++				gunner->aimDebounceTime = level.time + 500;
+ 			}
+ 
+ 			// can be drawn
+@@ -2033,8 +2056,11 @@ void panel_turret_think( gentity_t *self )
+ 			// we only need to think when we are being used
+ 			self->nextthink = level.time + 50;
+ 
+-			cg.overrides.active |= CG_OVERRIDE_FOV;
+-			cg.overrides.fov = 50;
++			if ( !gunner->s.number )
++			{
++				cg.overrides.active |= CG_OVERRIDE_FOV;
++				cg.overrides.fov = 50;
++			}
+ 		}
+ 
+ 		if ( ucmd->buttons & BUTTON_ATTACK || ucmd->buttons & BUTTON_ALT_ATTACK )
+@@ -2058,8 +2084,12 @@ void panel_turret_think( gentity_t *self )
+ //-----------------------------------------
+ void panel_turret_use( gentity_t *self, gentity_t *other, gentity_t *activator )
+ {
+-	// really only usable by the player
+-	if ( !activator || !activator->client || activator->s.number )
++	// really only usable by the player (jk2coop: any co-op player, one at a time)
++	if ( !activator || !activator->client || !G_IsCoopPlayer( activator ) )
++	{
++		return;
++	}
++	if ( G_CoopViewer( self ) && G_CoopViewer( self ) != activator )
+ 	{
+ 		return;
+ 	}
 diff --git a/codeJK2/game/g_utils.cpp b/codeJK2/game/g_utils.cpp
-index 95a70c6..dd3a0ba 100644
+index 95a70c6..2d235bd 100644
 --- a/codeJK2/game/g_utils.cpp
 +++ b/codeJK2/game/g_utils.cpp
-@@ -230,7 +230,9 @@ void G_PlayEffect( const char *name,  const int modelIndex, const int boltIndex,
+@@ -31,6 +31,7 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
+ #include "g_icarus.h"
+ #include "b_local.h"
+ #include "anims.h"
++#include "objectives.h"	// jk2coop round 33: gap test bot
+ #include "../../code/rd-common/mdx_format.h"
+ 
+ #define ACT_ACTIVE		qtrue
+@@ -230,7 +231,9 @@ void G_PlayEffect( const char *name,  const int modelIndex, const int boltIndex,
  
  extern void cgi_S_StartSound( vec3_t origin, int entityNum, int entchannel, sfxHandle_t sfx );
  #include "../cgame/cg_media.h"	//access to cgs
@@ -5231,7 +7096,7 @@ index 95a70c6..dd3a0ba 100644
  //NOTE: Do NOT Try to use this before the cgame DLL is valid, it will NOT work!
  void G_SoundOnEnt (gentity_t *ent, soundChannel_t channel, const char *soundPath)
  {
-@@ -250,6 +252,19 @@ void G_SoundOnEnt (gentity_t *ent, soundChannel_t channel, const char *soundPath
+@@ -250,6 +253,19 @@ void G_SoundOnEnt (gentity_t *ent, soundChannel_t channel, const char *soundPath
  	{
  		CG_TryPlayCustomSound( NULL, ent->s.number, channel, soundPath, -1 );
  	}
@@ -5251,10 +7116,263 @@ index 95a70c6..dd3a0ba 100644
  }
  
  void G_SpeechEvent( gentity_t *self, int event )
-@@ -712,6 +727,1055 @@ void G_InitGentity( gentity_t *e )
- 	e->lastValidWaypoint	= WAYPOINT_NONE;
- }
+@@ -460,256 +476,1718 @@ int G_RadiusList ( vec3_t origin, float radius,	gentity_t *ignore, qboolean take
+ 		radius = 1;
+ 	}
  
+-	for ( i = 0 ; i < 3 ; i++ )
++	for ( i = 0 ; i < 3 ; i++ )
++	{
++		mins[i] = origin[i] - radius;
++		maxs[i] = origin[i] + radius;
++	}
++
++	numListedEntities = gi.EntitiesInBox( mins, maxs, entityList, MAX_GENTITIES );
++
++	for ( e = 0 ; e < numListedEntities ; e++ )
++	{
++		ent = entityList[ e ];
++
++		if ((ent == ignore) || !(ent->inuse) || ent->takedamage != takeDamage)
++			continue;
++
++		// find the distance from the edge of the bounding box
++		for ( i = 0 ; i < 3 ; i++ )
++		{
++			if ( origin[i] < ent->absmin[i] )
++			{
++				v[i] = ent->absmin[i] - origin[i];
++			} else if ( origin[i] > ent->absmax[i] )
++			{
++				v[i] = origin[i] - ent->absmax[i];
++			} else
++			{
++				v[i] = 0;
++			}
++		}
++
++		dist = VectorLength( v );
++		if ( dist >= radius )
++		{
++			continue;
++		}
++
++		// ok, we are within the radius, add us to the incoming list
++		ent_list[ent_count] = ent;
++		ent_count++;
++
++	}
++	// we are done, return how many we found
++	return(ent_count);
++}
++
++
++/*
++=============
++G_PickTarget
++
++Selects a random entity from among the targets
++=============
++*/
++#define MAXCHOICES	32
++
++gentity_t *G_PickTarget (char *targetname)
++{
++	gentity_t	*ent = NULL;
++	int		num_choices = 0;
++	gentity_t	*choice[MAXCHOICES];
++
++	if (!targetname)
++	{
++		gi.Printf("G_PickTarget called with NULL targetname\n");
++		return NULL;
++	}
++
++	while(1)
++	{
++		ent = G_Find (ent, FOFS(targetname), targetname);
++		if (!ent)
++			break;
++		choice[num_choices++] = ent;
++		if (num_choices == MAXCHOICES)
++			break;
++	}
++
++	if (!num_choices)
++	{
++		gi.Printf("G_PickTarget: target %s not found\n", targetname);
++		return NULL;
++	}
++
++	return choice[rand() % num_choices];
++}
++
++void G_UseTargets2 (gentity_t *ent, gentity_t *activator, const char *string)
++{
++	gentity_t		*t;
++
++//
++// fire targets
++//
++	if (string)
++	{
++		t = NULL;
++		while ( (t = G_Find (t, FOFS(targetname), (char *) string)) != NULL )
++		{
++			if (t == ent)
++			{
++//				gi.Printf ("WARNING: Entity used itself.\n");
++			}
++			if (t->e_UseFunc != useF_NULL)	// check can be omitted
++			{
++				GEntity_UseFunc(t, ent, activator);
++			}
++
++			if (!ent->inuse)
++			{
++				gi.Printf("entity was removed while using targets\n");
++				return;
++			}
++		}
++	}
++}
++
++/*
++==============================
++G_UseTargets
++
++"activator" should be set to the entity that initiated the firing.
++
++Search for (string)targetname in all entities that
++match (string)self.target and call their .use function
++
++==============================
++*/
++void G_UseTargets (gentity_t *ent, gentity_t *activator)
++{
++//
++// fire targets
++//
++	G_UseTargets2 (ent, activator, ent->target);
++}
++
++
++/*
++=============
++TempVector
++
++This is just a convenience function
++for making temporary vectors for function calls
++=============
++*/
++float	*tv( float x, float y, float z ) {
++	static	int		index;
++	static	vec3_t	vecs[8];
++	float	*v;
++
++	// use an array so that multiple tempvectors won't collide
++	// for a while
++	v = vecs[index];
++	index = (index + 1)&7;
++
++	v[0] = x;
++	v[1] = y;
++	v[2] = z;
++
++	return v;
++}
++
++
++/*
++=============
++VectorToString
++
++This is just a convenience function
++for printing vectors
++=============
++*/
++char	*vtos( const vec3_t v ) {
++	static	int		index;
++	static	char	str[8][32];
++	char	*s;
++
++	// use an array so that multiple vtos won't collide
++	s = str[index];
++	index = (index + 1)&7;
++
++	Com_sprintf (s, 32, "(%4.2f %4.2f %4.2f)", v[0], v[1], v[2]);
++
++	return s;
++}
++
++
++/*
++===============
++G_SetMovedir
++
++The editor only specifies a single value for angles (yaw),
++but we have special constants to generate an up or down direction.
++Angles will be cleared, because it is being used to represent a direction
++instead of an orientation.
++===============
++*/
++void G_SetMovedir( vec3_t angles, vec3_t movedir ) {
++	static vec3_t VEC_UP		= {0, -1, 0};
++	static vec3_t MOVEDIR_UP	= {0, 0, 1};
++	static vec3_t VEC_DOWN		= {0, -2, 0};
++	static vec3_t MOVEDIR_DOWN	= {0, 0, -1};
++
++	if ( VectorCompare (angles, VEC_UP) ) {
++		VectorCopy (MOVEDIR_UP, movedir);
++	} else if ( VectorCompare (angles, VEC_DOWN) ) {
++		VectorCopy (MOVEDIR_DOWN, movedir);
++	} else {
++		AngleVectors (angles, movedir, NULL, NULL);
++	}
++	VectorClear( angles );
++}
++
++
++float vectoyaw( const vec3_t vec ) {
++	float	yaw;
++
++	if (vec[YAW] == 0 && vec[PITCH] == 0) {
++		yaw = 0;
++	} else {
++		if (vec[PITCH]) {
++			yaw = ( atan2( vec[YAW], vec[PITCH]) * 180 / M_PI );
++		} else if (vec[YAW] > 0) {
++			yaw = 90;
++		} else {
++			yaw = 270;
++		}
++		if (yaw < 0) {
++			yaw += 360;
++		}
++	}
++
++	return yaw;
++}
++
++
++void G_InitGentity( gentity_t *e )
++{
++	e->inuse = qtrue;
++	SetInUse(e);
++	e->classname = "noclass";
++	e->s.number = e - g_entities;
++
++	ICARUS_FreeEnt( e );	//ICARUS information must be added after this point
++
++	// remove any ghoul2 models here
++	//let not gi.G2API_CleanGhoul2Models(e->ghoul2);
++
++	//Navigational setups
++	e->waypoint				= WAYPOINT_NONE;
++	e->lastWaypoint			= WAYPOINT_NONE;
++	e->lastValidWaypoint	= WAYPOINT_NONE;
++}
++
 +/*
 +=================
 +jk2coop: co-op player helpers (declared in g_local.h)
@@ -5316,6 +7434,27 @@ index 95a70c6..dd3a0ba 100644
 +		}
 +	}
 +	return best ? best : &g_entities[0];
++}
++
++// jk2coop round 31: the player (host or joiner) who is looking through /
++// controlling `viewed` (security camera, panel turret, droid), or NULL.
++// Single player asked `player->client->ps.viewEntity == self->s.number`, which
++// only ever meant the host.
++gentity_t *G_CoopViewer( const gentity_t *viewed )
++{
++	if ( !viewed || viewed->s.number <= 0 || viewed->s.number >= ENTITYNUM_WORLD )
++	{
++		return NULL;
++	}
++	for ( int i = 0; i < MAX_CLIENTS; i++ )
++	{
++		gentity_t *ent = &g_entities[i];
++		if ( ent->inuse && ent->client && !ent->NPC && ent->client->ps.viewEntity == viewed->s.number )
++		{
++			return ent;
++		}
++	}
++	return NULL;
 +}
 +
 +/*
@@ -6058,6 +8197,8 @@ index 95a70c6..dd3a0ba 100644
 +}
 +
 +// once per server frame on the host
++static qboolean G_CoopGapTestActive( void );
++static qboolean G_CoopGapTestRun( int now );
 +void G_CoopCrawlFrame( void )
 +{
 +	if ( !G_CoopCrawlActive() )
@@ -6211,6 +8352,14 @@ index 95a70c6..dd3a0ba 100644
 +		G_CoopCrawlFinish( qfalse, va( "joiner_lost_at_%d", now - s_crawl.joinedAt ) );
 +		return;
 +	}
++	if ( G_CoopGapTestActive() )
++	{// round 33: the co-op feature test bot instead of the tour (coop_gaptest 1)
++		if ( G_CoopGapTestRun( now ) )
++		{
++			G_CoopCrawlFinish( qtrue, "ok" );
++		}
++		return;
++	}
 +	if ( tourCvar && tourCvar->integer && !in_camera && now >= s_crawl.nextTour )
 +	{
 +		s_crawl.nextTour = now + 4000;
@@ -6226,14 +8375,488 @@ index 95a70c6..dd3a0ba 100644
 +void G_CoopCrawlReset( void )
 +{
 +	memset( &s_crawl, 0, sizeof( s_crawl ) );
++	extern void G_CoopGapTestReset( void );
++	G_CoopGapTestReset();
 +}
 +
++/*
++================
++jk2coop round 33: co-op feature test bot ("gap test")
++
++Runs inside the level crawl (coop_crawl 1 + coop_gaptest 1, launcher
++tools/windows/jk2coop-levelcrawl.ps1 -GapTest). Once the joiner is in, the
++host's game drives each co-op feature directly -- objectives, the cutscene
++camera, the joiner's snapshot viewpoint, security camera / NPC / turret
++views, the AT-ST, friend-or-foe data, the pistol charge glow, the animation
++clock after a menu, downed/revive -- and tells the joiner's game what it
++should now see ("cooptest <test> <ms> <expected...>"). The joiner's game
++checks its own state after <ms> and logs "P2 GT ... PASS|FAIL" (cg_view.cpp
++CG_CoopTestFrame); the host logs what it checked itself as "GT HOST ...".
++A feature the level doesn't have (no camera, no turret) is a GT SKIP.
++coop_test_twin <name> breaks one feature on purpose: that test must FAIL.
++================
++*/
++extern void CGCam_Enable( void );
++extern void CGCam_SetPosition( vec3_t org );
++extern void CGCam_SetAngles( vec3_t ang );
++extern qboolean G_ClearViewEntity( gentity_t *ent );
++extern void G_SetViewEntity( gentity_t *self, gentity_t *viewEntity );
++extern void camera_use( gentity_t *self, gentity_t *other, gentity_t *activator );
++extern void panel_turret_use( gentity_t *self, gentity_t *other, gentity_t *activator );
++extern void G_DriveATST( gentity_t *ent, gentity_t *atst );
++
++static const char *s_gtTests[] = { "obj", "cam", "snapview", "camview", "npcview", "turret", "atst", "team", "charge", "revive", "menuclock", NULL };
++
++static struct
++{
++	int				readyAt;		// real ms the tests may start (0 = not set)
++	int				test;			// index into s_gtTests
++	int				stage;
++	int				stepStart;		// real ms the current test started
++	int				joiner;
++	int				target;
++	float			savedRange;
++	char			savedThird[16];
++	objectives_t	savedObj[MAX_MISSION_OBJ];
++} s_gt;
++
++void G_CoopGapTestReset( void )
++{
++	memset( &s_gt, 0, sizeof( s_gt ) );
++}
++
++static qboolean G_CoopGapTestActive( void )
++{
++	cvar_t *c = gi.cvar( "coop_gaptest", "0", 0 );
++	return (qboolean)( G_CoopCrawlActive() && c && c->integer );
++}
++
++static void GT_Log( const char *test, const char *what, const char *detail )
++{
++	G_CoopCrawlLog( "GT %s map=%s test=%s %s", what, level.mapname, test, detail ? detail : "" );
++}
++
++static void GT_Host( const char *test, qboolean pass, const char *detail )
++{
++	G_CoopCrawlLog( "GT HOST map=%s test=%s %s %s", level.mapname, test, pass ? "PASS" : "FAIL", detail ? detail : "" );
++}
++
++static gentity_t *GT_FindNPC( int team )
++{
++	for ( int i = MAX_CLIENTS; i < ENTITYNUM_WORLD; i++ )
++	{
++		gentity_t *e = &g_entities[i];
++		if ( e->inuse && e->client && e->NPC && e->health > 0 && ( team < 0 || e->client->playerTeam == team ) )
++		{
++			return e;
++		}
++	}
++	return NULL;
++}
++
++static gentity_t *GT_FindClass( const char *classname, qboolean needAlive )
++{
++	gentity_t *e = NULL;
++	while ( ( e = G_Find( e, FOFS( classname ), classname ) ) != NULL )
++	{
++		if ( e->inuse && !G_CoopViewer( e ) && ( !needAlive || e->health > 0 ) )
++		{
++			return e;
++		}
++	}
++	return NULL;
++}
++
++// one test, called every frame; returns qtrue when it is over
++static qboolean GT_RunTest( const char *t, int el )
++{
++	gentity_t	*host = &g_entities[0];
++	gentity_t	*jo = &g_entities[s_gt.joiner];
++	const int	jn = s_gt.joiner;
++
++	if ( !Q_stricmp( t, "obj" ) )
++	{
++		if ( s_gt.stage == 0 )
++		{// a known set of objectives on the host; the joiner must show exactly these
++			objectives_t *o = level.clients[0].sess.mission_objectives;
++			memcpy( s_gt.savedObj, o, sizeof( s_gt.savedObj ) );
++			char exp[MAX_MISSION_OBJ + 1];
++			for ( int i = 0; i < MAX_MISSION_OBJ; i++ )
++			{
++				o[i].display = ( i == 0 || i == 3 || i == 5 ) ? OBJECTIVE_SHOW : OBJECTIVE_HIDE;
++				o[i].status = ( i == 3 ) ? OBJECTIVE_STAT_SUCCEEDED : ( i == 5 ) ? OBJECTIVE_STAT_FAILED : OBJECTIVE_STAT_PENDING;
++				exp[i] = (char)( '0' + ( o[i].display ? 4 : 0 ) + ( o[i].status & 3 ) );
++			}
++			exp[MAX_MISSION_OBJ] = 0;
++			gi.SendServerCommand( jn, "cooptest obj 1500 %s", exp );
++			s_gt.stage = 1;
++		}
++		else if ( el >= 2500 )
++		{
++			memcpy( level.clients[0].sess.mission_objectives, s_gt.savedObj, sizeof( s_gt.savedObj ) );
++			return qtrue;
++		}
++		return qfalse;
++	}
++	if ( !Q_stricmp( t, "cam" ) )
++	{
++		if ( s_gt.stage == 0 )
++		{// a cutscene camera of our own above the host, looking down
++			vec3_t pos, ang;
++			VectorCopy( host->client->ps.origin, pos );
++			pos[2] += 150;
++			VectorSet( ang, 30, host->client->ps.viewangles[YAW], 0 );
++			CGCam_Enable();
++			CGCam_SetPosition( pos );
++			CGCam_SetAngles( ang );
++			s_gt.stage = 1;
++		}
++		else if ( s_gt.stage == 1 && el >= 400 )
++		{
++			gi.SendServerCommand( jn, "cooptest cam 1500 %.0f %.0f %.0f", client_camera.origin[0], client_camera.origin[1], client_camera.origin[2] );
++			s_gt.stage = 2;
++		}
++		else if ( s_gt.stage == 2 && el >= 1500 )
++		{
++			GT_Host( t, (qboolean)( !( jo->contents & CONTENTS_BODY ) ), va( "joiner_contents=%d (must not be solid in a cutscene)", jo->contents ) );
++			s_gt.stage = 3;
++		}
++		else if ( s_gt.stage == 3 && el >= 2500 )
++		{
++			CGCam_Disable();
++			gi.SendServerCommand( jn, "cooptest cam 2500 off" );
++			s_gt.stage = 4;
++		}
++		else if ( s_gt.stage == 4 && el >= 3500 )
++		{
++			GT_Host( t, (qboolean)( ( jo->contents & CONTENTS_BODY ) != 0 ), va( "after: joiner_contents=%d (solid again)", jo->contents ) );
++			s_gt.stage = 5;
++		}
++		return (qboolean)( el >= 5500 );
++	}
++	if ( !Q_stricmp( t, "snapview" ) )
++	{
++		if ( s_gt.stage == 0 )
++		{// host in third person: its own view used to be every joiner's viewpoint
++			cvar_t *tp = gi.cvar( "cg_thirdperson", "0", 0 );
++			Q_strncpyz( s_gt.savedThird, tp ? tp->string : "0", sizeof( s_gt.savedThird ) );
++			gi.cvar_set( "cg_thirdperson", "1" );
++			gi.SendServerCommand( jn, "cooptest snapview 1500" );
++			s_gt.stage = 1;
++		}
++		else if ( el >= 2500 )
++		{
++			gi.cvar_set( "cg_thirdperson", s_gt.savedThird );
++			return qtrue;
++		}
++		return qfalse;
++	}
++	if ( !Q_stricmp( t, "camview" ) || !Q_stricmp( t, "turret" ) || !Q_stricmp( t, "npcview" ) )
++	{
++		const int kind = !Q_stricmp( t, "camview" ) ? COOP_VIEW_CAMERA : !Q_stricmp( t, "turret" ) ? COOP_VIEW_PANEL_TURRET : COOP_VIEW_NPC;
++		if ( s_gt.stage == 0 )
++		{
++			gentity_t *v = ( kind == COOP_VIEW_CAMERA ) ? GT_FindClass( "misc_camera", qtrue )
++				: ( kind == COOP_VIEW_PANEL_TURRET ) ? GT_FindClass( "misc_panel_turret", qfalse )
++				: GT_FindNPC( TEAM_PLAYER );
++			if ( !v && kind == COOP_VIEW_NPC )
++			{
++				v = GT_FindNPC( -1 );
++			}
++			if ( !v )
++			{
++				GT_Log( t, "SKIP", "reason=not_on_this_map" );
++				return qtrue;
++			}
++			s_gt.target = v->s.number;
++			s_gt.savedRange = cg.overrides.fov;
++			if ( kind == COOP_VIEW_CAMERA )
++			{
++				camera_use( v, jo, jo );
++			}
++			else if ( kind == COOP_VIEW_PANEL_TURRET )
++			{
++				v->useDebounceTime = 0;
++				panel_turret_use( v, jo, jo );
++			}
++			else
++			{
++				G_SetViewEntity( jo, v );
++			}
++			s_gt.stage = 1;
++		}
++		else if ( s_gt.stage == 1 && el >= 500 )
++		{
++			gentity_t *v = &g_entities[s_gt.target];
++			gi.SendServerCommand( jn, "cooptest %s 1500 %d %d %.0f %.0f %.0f", t, kind, s_gt.target,
++				v->currentOrigin[0], v->currentOrigin[1], v->currentOrigin[2] );
++			s_gt.stage = 2;
++		}
++		else if ( s_gt.stage == 2 && el >= 1500 )
++		{
++			const qboolean mine = (qboolean)( G_CoopViewer( &g_entities[s_gt.target] ) == jo );
++			const qboolean hostFov = (qboolean)( kind != COOP_VIEW_PANEL_TURRET || cg.overrides.fov == s_gt.savedRange );
++			GT_Host( t, (qboolean)( mine && hostFov ), va( "joiner_is_viewer=%d host_fov_untouched=%d", mine, hostFov ) );
++			s_gt.stage = 3;
++		}
++		else if ( s_gt.stage == 3 && el >= 2500 )
++		{
++			G_ClearViewEntity( jo );
++			s_gt.stage = 4;
++		}
++		return (qboolean)( el >= 3000 );
++	}
++	if ( !Q_stricmp( t, "atst" ) )
++	{
++		if ( s_gt.stage == 0 )
++		{
++			s_gt.savedRange = cg.overrides.thirdPersonRange;
++			G_DriveATST( jo, NULL );
++			s_gt.stage = 1;
++		}
++		else if ( s_gt.stage == 1 && el >= 1000 )
++		{
++			gi.SendServerCommand( jn, "cooptest atst 1500 1" );
++			s_gt.stage = 2;
++		}
++		else if ( s_gt.stage == 2 && el >= 2000 )
++		{
++			const qboolean in = (qboolean)( jo->client->NPC_class == CLASS_ATST && ( jo->client->ps.eFlags & EF_IN_ATST ) );
++			const qboolean hostCam = (qboolean)( cg.overrides.thirdPersonRange == s_gt.savedRange );
++			GT_Host( t, (qboolean)( in && hostCam ), va( "joiner_in_atst=%d host_camera_untouched=%d", in, hostCam ) );
++			s_gt.stage = 3;
++		}
++		else if ( s_gt.stage == 3 && el >= 3000 )
++		{
++			G_DriveATST( jo, NULL );	// and out again
++			s_gt.stage = 4;
++		}
++		else if ( s_gt.stage == 4 && el >= 3500 )
++		{
++			gi.SendServerCommand( jn, "cooptest atst 1500 0" );
++			s_gt.stage = 5;
++		}
++		return (qboolean)( el >= 5500 );
++	}
++	if ( !Q_stricmp( t, "team" ) )
++	{
++		if ( s_gt.stage == 0 )
++		{
++			gentity_t *ally = GT_FindNPC( TEAM_PLAYER );
++			gentity_t *enemy = GT_FindNPC( TEAM_ENEMY );
++			gi.SendServerCommand( jn, "cooptest team 1500 %d %d", ally ? ally->s.number : -1, enemy ? enemy->s.number : -1 );
++			s_gt.stage = 1;
++		}
++		return (qboolean)( el >= 2500 );
++	}
++	if ( !Q_stricmp( t, "charge" ) )
++	{
++		if ( s_gt.stage == 0 )
++		{
++			jo->client->ps.stats[STAT_WEAPONS] |= ( 1 << WP_BRYAR_PISTOL );
++			gi.SendServerCommand( jn, "cooptest charge 1800" );
++			s_gt.stage = 1;
++		}
++		if ( el < 1600 )
++		{// the joiner "holds the alt-fire button" on the pistol (after its own commands this frame)
++			jo->client->ps.weapon = WP_BRYAR_PISTOL;
++			jo->client->ps.weaponstate = WEAPON_CHARGING_ALT;
++			jo->client->ps.weaponChargeTime = level.time - 400;
++			return qfalse;
++		}
++		if ( s_gt.stage == 1 )
++		{
++			jo->client->ps.weaponstate = WEAPON_READY;
++			s_gt.stage = 2;
++		}
++		return (qboolean)( el >= 2500 );
++	}
++	if ( !Q_stricmp( t, "menuclock" ) )
++	{
++		if ( s_gt.stage == 0 )
++		{// the host runs on the spot, so its legs keep animating on the joiner's screen
++			NPC_SetAnim( host, SETANIM_BOTH, BOTH_RUN1, SETANIM_FLAG_OVERRIDE | SETANIM_FLAG_HOLD );
++			host->client->ps.legsAnimTimer = host->client->ps.torsoAnimTimer = 6000;
++			gi.SendServerCommand( jn, "cooptest menuclock 3400 0" );
++			s_gt.stage = 1;
++		}
++		else if ( el >= 4500 )
++		{
++			host->client->ps.legsAnimTimer = host->client->ps.torsoAnimTimer = 0;
++			return qtrue;
++		}
++		return qfalse;
++	}
++	if ( !Q_stricmp( t, "revive" ) )
++	{
++		if ( s_gt.stage == 0 )
++		{
++			const qboolean down = G_CoopTryDown( jo, MOD_UNKNOWN );
++			GT_Host( t, down, "G_CoopTryDown with the host standing" );
++			gi.SendServerCommand( jn, "cooptest revive 1500 1" );
++			s_gt.stage = 1;
++		}
++		else if ( s_gt.stage == 1 && el >= 2500 )
++		{
++			if ( G_CoopIsDowned( jo ) )
++			{
++				G_CoopRevive( jo, 0 );
++			}
++			gi.SendServerCommand( jn, "cooptest revive 1500 0" );
++			s_gt.stage = 2;
++		}
++		return (qboolean)( el >= 4500 );
++	}
++	GT_Log( t, "SKIP", "reason=unknown_test" );
++	return qtrue;
++}
++
++// qtrue when every test has run
++static qboolean G_CoopGapTestRun( int now )
++{
++	if ( !s_gt.readyAt )
++	{// let the level settle; and no more automatic cutscene skipping (the cam test makes its own)
++		s_gt.readyAt = now + 4000;
++		gi.cvar_set( "g_skipIntroCinematics", "0" );
++		return qfalse;
++	}
++	if ( now < s_gt.readyAt || ( in_camera && !s_gt.stepStart ) )
+ 	{
+-		mins[i] = origin[i] - radius;
+-		maxs[i] = origin[i] + radius;
++		return qfalse;
+ 	}
+-
+-	numListedEntities = gi.EntitiesInBox( mins, maxs, entityList, MAX_GENTITIES );
+-
+-	for ( e = 0 ; e < numListedEntities ; e++ )
++	if ( !s_gt.joiner )
+ 	{
+-		ent = entityList[ e ];
+-
+-		if ((ent == ignore) || !(ent->inuse) || ent->takedamage != takeDamage)
+-			continue;
+-
+-		// find the distance from the edge of the bounding box
+-		for ( i = 0 ; i < 3 ; i++ )
++		for ( int i = 1; i < MAX_CLIENTS; i++ )
+ 		{
+-			if ( origin[i] < ent->absmin[i] )
+-			{
+-				v[i] = ent->absmin[i] - origin[i];
+-			} else if ( origin[i] > ent->absmax[i] )
+-			{
+-				v[i] = origin[i] - ent->absmax[i];
+-			} else
++			if ( G_CoopPlayerActive( i ) && g_entities[i].client && g_entities[i].health > 0 )
+ 			{
+-				v[i] = 0;
++				s_gt.joiner = i;
++				break;
+ 			}
+ 		}
+-
+-		dist = VectorLength( v );
+-		if ( dist >= radius )
++		if ( !s_gt.joiner )
+ 		{
+-			continue;
++			return qfalse;
+ 		}
+-
+-		// ok, we are within the radius, add us to the incoming list
+-		ent_list[ent_count] = ent;
+-		ent_count++;
+-
+ 	}
+-	// we are done, return how many we found
+-	return(ent_count);
+-}
+-
+-
+-/*
+-=============
+-G_PickTarget
+-
+-Selects a random entity from among the targets
+-=============
+-*/
+-#define MAXCHOICES	32
+-
+-gentity_t *G_PickTarget (char *targetname)
+-{
+-	gentity_t	*ent = NULL;
+-	int		num_choices = 0;
+-	gentity_t	*choice[MAXCHOICES];
+-
+-	if (!targetname)
++	const char *t = s_gtTests[s_gt.test];
++	if ( !t )
+ 	{
+-		gi.Printf("G_PickTarget called with NULL targetname\n");
+-		return NULL;
++		GT_Log( "all", "DONE", "" );
++		return qtrue;
+ 	}
+-
+-	while(1)
++	if ( !s_gt.stepStart )
+ 	{
+-		ent = G_Find (ent, FOFS(targetname), targetname);
+-		if (!ent)
+-			break;
+-		choice[num_choices++] = ent;
+-		if (num_choices == MAXCHOICES)
+-			break;
++		s_gt.stepStart = now;
++		s_gt.stage = 0;
++		GT_Log( t, "START", va( "joiner=%d", s_gt.joiner ) );
+ 	}
+-
+-	if (!num_choices)
++	if ( GT_RunTest( t, now - s_gt.stepStart ) )
+ 	{
+-		gi.Printf("G_PickTarget: target %s not found\n", targetname);
+-		return NULL;
++		s_gt.test++;
++		s_gt.stepStart = 0;
+ 	}
+-
+-	return choice[rand() % num_choices];
++	return qfalse;
+ }
+ 
+-void G_UseTargets2 (gentity_t *ent, gentity_t *activator, const char *string)
 +// give a co-op player a weapon the way a pickup would (no forced switch)
 +extern void WP_SaberInitBladeData( gentity_t *ent );
 +void G_CoopGiveWeapon( gentity_t *ent, int wp )
-+{
+ {
+-	gentity_t		*t;
+-
+-//
+-// fire targets
+-//
+-	if (string)
 +	if ( !ent || !ent->client || wp <= WP_NONE || wp >= WP_NUM_WEAPONS )
-+	{
+ 	{
+-		t = NULL;
+-		while ( (t = G_Find (t, FOFS(targetname), (char *) string)) != NULL )
+-		{
+-			if (t == ent)
+-			{
+-//				gi.Printf ("WARNING: Entity used itself.\n");
+-			}
+-			if (t->e_UseFunc != useF_NULL)	// check can be omitted
+-			{
+-				GEntity_UseFunc(t, ent, activator);
+-			}
+-
+-			if (!ent->inuse)
+-			{
+-				gi.Printf("entity was removed while using targets\n");
+-				return;
+-			}
+-		}
 +		return;
 +	}
 +	const qboolean hadWeapon = (qboolean)( ( ent->client->ps.stats[STAT_WEAPONS] & ( 1 << wp ) ) != 0 );
@@ -6256,9 +8879,21 @@ index 95a70c6..dd3a0ba 100644
 +	if ( item && !hadWeapon )
 +	{
 +		G_AddEvent( ent, EV_ITEM_PICKUP, ( item - bg_itemlist ) );
-+	}
-+}
-+
+ 	}
+ }
+ 
+-/*
+-==============================
+-G_UseTargets
+-
+-"activator" should be set to the entity that initiated the firing.
+-
+-Search for (string)targetname in all entities that
+-match (string)self.target and call their .use function
+-
+-==============================
+-*/
+-void G_UseTargets (gentity_t *ent, gentity_t *activator)
 +// Jedi progression is handed out by each level's start script, which only ever
 +// affects the host ("kyle"): Force power levels, saber skill and, at the end of
 +// the trial, the lightsaber itself. jk2coop round 15: joiners now get EXACTLY
@@ -6268,19 +8903,114 @@ index 95a70c6..dd3a0ba 100644
 +// by the level script (kejim_start sets every level to 0), so player 2 could
 +// Force-jump on the very first level.
 +void G_CoopSyncProgression( void )
-+{
+ {
+-//
+-// fire targets
+-//
+-	G_UseTargets2 (ent, activator, ent->target);
+-}
+-
+-
+-/*
+-=============
+-TempVector
+-
+-This is just a convenience function
+-for making temporary vectors for function calls
+-=============
+-*/
+-float	*tv( float x, float y, float z ) {
+-	static	int		index;
+-	static	vec3_t	vecs[8];
+-	float	*v;
+-
+-	// use an array so that multiple tempvectors won't collide
+-	// for a while
+-	v = vecs[index];
+-	index = (index + 1)&7;
+-
+-	v[0] = x;
+-	v[1] = y;
+-	v[2] = z;
+-
+-	return v;
+-}
+-
+-
+-/*
+-=============
+-VectorToString
+-
+-This is just a convenience function
+-for printing vectors
+-=============
+-*/
+-char	*vtos( const vec3_t v ) {
+-	static	int		index;
+-	static	char	str[8][32];
+-	char	*s;
+-
+-	// use an array so that multiple vtos won't collide
+-	s = str[index];
+-	index = (index + 1)&7;
+-
+-	Com_sprintf (s, 32, "(%4.2f %4.2f %4.2f)", v[0], v[1], v[2]);
+-
+-	return s;
+-}
+-
+-
+-/*
+-===============
+-G_SetMovedir
+-
+-The editor only specifies a single value for angles (yaw),
+-but we have special constants to generate an up or down direction.
+-Angles will be cleared, because it is being used to represent a direction
+-instead of an orientation.
+-===============
+-*/
+-void G_SetMovedir( vec3_t angles, vec3_t movedir ) {
+-	static vec3_t VEC_UP		= {0, -1, 0};
+-	static vec3_t MOVEDIR_UP	= {0, 0, 1};
+-	static vec3_t VEC_DOWN		= {0, -2, 0};
+-	static vec3_t MOVEDIR_DOWN	= {0, 0, -1};
 +	gentity_t *host = &g_entities[0];
-+
+ 
+-	if ( VectorCompare (angles, VEC_UP) ) {
+-		VectorCopy (MOVEDIR_UP, movedir);
+-	} else if ( VectorCompare (angles, VEC_DOWN) ) {
+-		VectorCopy (MOVEDIR_DOWN, movedir);
+-	} else {
+-		AngleVectors (angles, movedir, NULL, NULL);
 +	if ( !host->client || !G_CoopHasJoiners() )
 +	{
 +		return;
-+	}
+ 	}
+-	VectorClear( angles );
+-}
+-
+-
+-float vectoyaw( const vec3_t vec ) {
+-	float	yaw;
+-
+-	if (vec[YAW] == 0 && vec[PITCH] == 0) {
+-		yaw = 0;
+-	} else {
+-		if (vec[PITCH]) {
+-			yaw = ( atan2( vec[YAW], vec[PITCH]) * 180 / M_PI );
+-		} else if (vec[YAW] > 0) {
+-			yaw = 90;
+-		} else {
+-			yaw = 270;
 +	for ( int i = 1; i < MAX_CLIENTS; i++ )
 +	{
 +		if ( !G_CoopPlayerActive( i ) )
 +		{
 +			continue;
-+		}
+ 		}
+-		if (yaw < 0) {
+-			yaw += 360;
 +		gentity_t *ent = &g_entities[i];
 +		if ( !ent->client || ent->health <= 0 )
 +		{
@@ -6300,14 +9030,33 @@ index 95a70c6..dd3a0ba 100644
 +			&& !( ent->client->ps.stats[STAT_WEAPONS] & ( 1 << WP_SABER ) ) )
 +		{
 +			G_CoopGiveWeapon( ent, WP_SABER );
-+		}
-+	}
-+}
-+
+ 		}
+ 	}
+-
+-	return yaw;
+-}
+-
+-
+-void G_InitGentity( gentity_t *e )
+-{
+-	e->inuse = qtrue;
+-	SetInUse(e);
+-	e->classname = "noclass";
+-	e->s.number = e - g_entities;
+-
+-	ICARUS_FreeEnt( e );	//ICARUS information must be added after this point
+-
+-	// remove any ghoul2 models here
+-	//let not gi.G2API_CleanGhoul2Models(e->ghoul2);
+-
+-	//Navigational setups
+-	e->waypoint				= WAYPOINT_NONE;
+-	e->lastWaypoint			= WAYPOINT_NONE;
+-	e->lastValidWaypoint	= WAYPOINT_NONE;
+ }
+ 
  /*
- =================
- G_Spawn
-@@ -1339,6 +2403,11 @@ extern int killPlayerTimer;
+@@ -1339,6 +2817,11 @@ extern int killPlayerTimer;
  void G_ChangeMap (const char *mapname, const char *spawntarget, qboolean hub)
  {
  //	gi.Printf("Loading...");
@@ -6524,17 +9273,18 @@ index 4fb25bb..c0afc7e 100644
  		if ( self->nextTrain )
  		{//you never know
 diff --git a/codeJK2/game/statindex.h b/codeJK2/game/statindex.h
-index d2c5c09..a34de49 100644
+index d2c5c09..a0bb549 100644
 --- a/codeJK2/game/statindex.h
 +++ b/codeJK2/game/statindex.h
-@@ -35,7 +35,9 @@ typedef enum {
+@@ -35,7 +35,10 @@ typedef enum {
  	STAT_ARMOR,
  	STAT_DEAD_YAW,					// look this direction when dead (FIXME: get rid of?)
  	STAT_CLIENTS_READY,				// bit mask of clients wishing to exit the intermission (FIXME: configstring?)
 -	STAT_MAX_HEALTH					// health / armor limit, changable by handicap
 +	STAT_MAX_HEALTH,				// health / armor limit, changable by handicap
 +	STAT_COOP_DOWNED,				// jk2coop round 23: 0 = up, 1 = downed, 2 = a downed partner is in reach (revive prompt)
-+	STAT_COOP_REVIVE				// jk2coop round 23: revive progress 0-100 (on the downed player and the reviver)
++	STAT_COOP_REVIVE,				// jk2coop round 23: revive progress 0-100 (on the downed player and the reviver)
++	STAT_COOP_VIEWKIND				// jk2coop round 31: what the player looks through (COOP_VIEW_*, bg_public.h); bits 8-15 = an NPC's FOV
  } statIndex_t;
  
  #endif	// #ifndef STATINDEX_H
@@ -6755,9 +9505,388 @@ index a3f5431..85c585c 100644
  		if ( g_spskill->integer == 0 )
  		{
 diff --git a/codeJK2/game/wp_saber.cpp b/codeJK2/game/wp_saber.cpp
-index 04c5aa2..931adef 100644
+index 04c5aa2..3731bc8 100644
 --- a/codeJK2/game/wp_saber.cpp
 +++ b/codeJK2/game/wp_saber.cpp
+@@ -825,7 +825,7 @@ qboolean WP_SaberApplyDamage( gentity_t *ent, float baseDamage, int baseDFlags,
+ 					}
+ 					else
+ 					{//clamp the dmg between 5 and 100
+-						if ( !victim->s.number && totalDmg[i] > 50 )
++						if ( G_IsCoopPlayer( victim ) && totalDmg[i] > 50 )
+ 						{//never do more than half full health damage to player
+ 							//prevents one-hit kills
+ 							totalDmg[i] = 50;
+@@ -866,7 +866,7 @@ qboolean WP_SaberApplyDamage( gentity_t *ent, float baseDamage, int baseDFlags,
+ 							}
+ 							if ( baseDamage <= 1.0f )
+ 							{//very mild damage
+-								if ( victim->s.number == 0 || victim->client->ps.weapon == WP_SABER || victim->client->NPC_class == CLASS_GALAKMECH )
++								if ( G_IsCoopPlayer( victim ) || victim->client->ps.weapon == WP_SABER || victim->client->NPC_class == CLASS_GALAKMECH )
+ 								{//if it's the player or a saber-user, don't kill them with this blow
+ 									dFlags |= DAMAGE_NO_KILL;
+ 								}
+@@ -930,7 +930,7 @@ qboolean WP_SaberApplyDamage( gentity_t *ent, float baseDamage, int baseDFlags,
+ #endif
+ 						//do the effect
+ 						//G_PlayEffect( G_EffectIndex( "blood_sparks" ), dmgSpot[i], dmgDir[i] );
+-						if ( ent->s.number == 0 )
++						if ( G_IsCoopPlayer( ent ) )
+ 						{
+ 							AddSoundEvent( victim->owner, dmgSpot[i], 256, AEL_DISCOVERED );
+ 							AddSightEvent( victim->owner, dmgSpot[i], 512, AEL_DISCOVERED, 50 );
+@@ -1543,7 +1543,7 @@ qboolean WP_SaberDamageForTrace( int ignore, vec3_t start, vec3_t end, float dmg
+ 			qboolean sabersIntersect = WP_SabersIntersect( attacker, owner, qfalse );//qtrue );
+ 			float sabersDist;
+ 			if ( attacker && attacker->client && attacker->client->ps.saberInFlight
+-				&& owner && owner->s.number == 0 && (g_saberAutoBlocking->integer||attacker->client->ps.saberBlockingTime>level.time) )//NPC flying saber hit player's saber bounding box
++				&& owner && G_IsCoopPlayer( owner ) && (g_saberAutoBlocking->integer||attacker->client->ps.saberBlockingTime>level.time) )//NPC flying saber hit player's saber bounding box
+ 			{//players have g_saberAutoBlocking, do the more generous check against flying sabers
+ 				//FIXME: instead of hitting the player's saber bounding box
+ 				//and picking an anim afterwards, have him use AI similar
+@@ -1974,7 +1974,7 @@ qboolean WP_SabersCheckLock2( gentity_t *attacker, gentity_t *defender, sabersLo
+ 	}
+ 	else
+ 	{//if a player is involved, clamp player's pitch and match NPC's to player
+-		if ( !attacker->s.number )
++		if ( G_IsCoopPlayer( attacker ) )
+ 		{
+ 			//clamp to defPitch
+ 			if ( attacker->client->ps.viewangles[PITCH] > -defPitchAdd + 10 )
+@@ -1997,7 +1997,7 @@ qboolean WP_SabersCheckLock2( gentity_t *attacker, gentity_t *defender, sabersLo
+ 			defender->client->ps.viewangles[PITCH] = attacker->client->ps.viewangles[PITCH]*-1;
+ 			defPitchAdd = defender->client->ps.viewangles[PITCH];
+ 		}
+-		else if ( !defender->s.number )
++		else if ( G_IsCoopPlayer( defender ) )
+ 		{
+ 			//clamp to defPitch
+ 			if ( defender->client->ps.viewangles[PITCH] > defPitchAdd + 10 )
+@@ -2546,7 +2546,7 @@ void WP_SaberDamageTrace( gentity_t *ent )
+ 		return;
+ 	}
+ 
+-	if ( !ent->s.number )
++	if ( G_IsCoopPlayer( ent ) )
+ 	{//player never uses these
+ 		ent->client->ps.saberEventFlags &= ~SEF_EVENTS;
+ 	}
+@@ -2589,7 +2589,7 @@ void WP_SaberDamageTrace( gentity_t *ent )
+ 	//		we animate so much faster that the arc is pretty much flat...
+ 
+ 	int entPowerLevel;
+-	if ( !ent->s.number && (ent->client->ps.forcePowersActive&(1<<FP_SPEED)) )
++	if ( G_IsCoopPlayer( ent ) && (ent->client->ps.forcePowersActive&(1<<FP_SPEED)) )
+ 	{
+ 		entPowerLevel = FORCE_LEVEL_3;
+ 	}
+@@ -2615,7 +2615,7 @@ void WP_SaberDamageTrace( gentity_t *ent )
+ 		}
+ 		else
+ 		{
+-			if ( !ent->s.number )
++			if ( G_IsCoopPlayer( ent ) )
+ 			{//cheat for player
+ 				baseDamage = 10.0f;
+ 			}
+@@ -2792,7 +2792,7 @@ void WP_SaberDamageTrace( gentity_t *ent )
+ 			baseDamage = 25.0f;
+ 		}
+ 	}
+-	else if ( (!ent->s.number&&ent->client->ps.forcePowersActive&(1<<FP_SPEED)) )
++	else if ( (!ent->s.number&&ent->client->ps.forcePowersActive&(1<<FP_SPEED)) && g_timescale->value < 1.0f )	// jk2coop: with co-op players Force Speed leaves timescale at 1 -> damage x0
+ 	{
+ 		baseDamage *= (1.0f-g_timescale->value);
+ 	}
+@@ -3481,7 +3481,7 @@ void WP_SaberDamageTrace( gentity_t *ent )
+ 	{
+ 		//just so Jedi knows that he hit a wall
+ 		ent->client->ps.saberEventFlags |= SEF_HITWALL;
+-		if ( ent->s.number == 0 )
++		if ( G_IsCoopPlayer( ent ) )
+ 		{
+ 			AddSoundEvent( ent, ent->currentOrigin, 128, AEL_DISCOVERED );
+ 			AddSightEvent( ent, ent->currentOrigin, 256, AEL_DISCOVERED, 50 );
+@@ -3521,7 +3521,7 @@ void WP_SaberImpact( gentity_t *owner, gentity_t *saber, trace_t *trace )
+ 		}
+ 		G_Damage( other, owner, saber, dir, trace->endpos, dmg, 0, MOD_SABER );
+ 		G_PlayEffect( "saber_cut", trace->endpos, dir );
+-		if ( owner->s.number == 0 )
++		if ( G_IsCoopPlayer( owner ) )
+ 		{
+ 			AddSoundEvent( owner, trace->endpos, 256, AEL_DISCOVERED );
+ 			AddSightEvent( owner, trace->endpos, 512, AEL_DISCOVERED, 50 );
+@@ -3546,7 +3546,7 @@ void WP_SaberImpact( gentity_t *owner, gentity_t *saber, trace_t *trace )
+ 		VectorCopy( trace->endpos, g_saberFlashPos );
+ 	}
+ 
+-	if ( owner && owner->s.number == 0 && owner->client )
++	if ( owner && G_IsCoopPlayer( owner ) )
+ 	{
+ 		//Add the event
+ 		if ( owner->client->ps.saberLength > 0 )
+@@ -4094,7 +4094,7 @@ qboolean WP_SaberLaunch( gentity_t *self, gentity_t *saber, qboolean thrown )
+ 			return qfalse;
+ 		}
+ 	}
+-	if ( !self->s.number && (cg.zoomMode || in_camera) )
++	if ( (!self->s.number && cg.zoomMode) || (G_IsCoopPlayer( self ) && in_camera) )
+ 	{//can't saber throw when zoomed in or in cinematic
+ 		return qfalse;
+ 	}
+@@ -4439,8 +4439,8 @@ void WP_SaberThrow( gentity_t *self, usercmd_t *ucmd )
+ 				self->client->ps.saberEntityNum = ENTITYNUM_NONE;
+ 				return;
+ 			}
+-			if ( (!self->s.number && level.time - saberent->aimDebounceTime > 15000)
+-				|| (self->s.number && level.time - saberent->aimDebounceTime > 5000) )
++			if ( (G_IsCoopPlayer( self ) && level.time - saberent->aimDebounceTime > 15000)
++				|| (!G_IsCoopPlayer( self ) && level.time - saberent->aimDebounceTime > 5000) )
+ 			{//(only for player) been missing for 15 seconds, automagicially return
+ 				WP_SaberCatch( self, saberent, qfalse );
+ 				return;
+@@ -4612,7 +4612,7 @@ void WP_SaberBlockNonRandom( gentity_t *self, vec3_t hitloc, qboolean missileBlo
+ 		return;
+ 	}
+ 	//NPCs don't auto-block
+-	if ( !missileBlock && self->s.number != 0 && self->client->ps.saberBlocked != BLOCKED_NONE )
++	if ( !missileBlock && !G_IsCoopPlayer( self ) && self->client->ps.saberBlocked != BLOCKED_NONE )
+ 	{
+ 		return;
+ 	}
+@@ -4746,7 +4746,7 @@ void WP_SaberBlock( gentity_t *saber, vec3_t hitloc, qboolean missileBlock )
+ 	}
+ 
+ 	//temporarily disabling auto-blocking for NPCs...
+-	if ( !missileBlock && playerent->s.number != 0 && playerent->client->ps.saberBlocked != BLOCKED_NONE )
++	if ( !missileBlock && !G_IsCoopPlayer( playerent ) && playerent->client->ps.saberBlocked != BLOCKED_NONE )
+ 	{
+ 		return;
+ 	}
+@@ -4872,13 +4872,13 @@ void WP_SaberStartMissileBlockCheck( gentity_t *self, usercmd_t *ucmd  )
+ 
+ 	if ( !self->client->ps.saberLength )
+ 	{
+-		if ( self->s.number == 0 )
++		if ( G_IsCoopPlayer( self ) )
+ 		{//player doesn't auto-activate
+ 			return;
+ 		}
+ 	}
+ 
+-	if ( !self->s.number )
++	if ( G_IsCoopPlayer( self ) )
+ 	{//don't do this if already attacking!
+ 		if ( ucmd->buttons & BUTTON_ATTACK
+ 			|| PM_SaberInAttack( self->client->ps.saberMove )
+@@ -4894,7 +4894,7 @@ void WP_SaberStartMissileBlockCheck( gentity_t *self, usercmd_t *ucmd  )
+ 		return;
+ 	}
+ 
+-	if ( !self->s.number && !g_saberAutoBlocking->integer && self->client->ps.saberBlockingTime<level.time )
++	if ( G_IsCoopPlayer( self ) && !g_saberAutoBlocking->integer && self->client->ps.saberBlockingTime<level.time )
+ 	{
+ 		return;
+ 	}
+@@ -4957,7 +4957,7 @@ void WP_SaberStartMissileBlockCheck( gentity_t *self, usercmd_t *ucmd  )
+ 		}
+ 		else
+ 		{
+-			if ( ent->s.pos.trType == TR_STATIONARY && !self->s.number )
++			if ( ent->s.pos.trType == TR_STATIONARY && G_IsCoopPlayer( self ) )
+ 			{//nothing you can do with a stationary missile if you're the player
+ 				continue;
+ 			}
+@@ -4996,7 +4996,7 @@ void WP_SaberStartMissileBlockCheck( gentity_t *self, usercmd_t *ucmd  )
+ 			//FIXME: handle tripmines and detpacks somehow...
+ 			//			maybe do a force-gesture that makes them explode?
+ 			//			But what if we're within it's splashradius?
+-			if ( !self->s.number )
++			if ( G_IsCoopPlayer( self ) )
+ 			{//players don't auto-handle these at all
+ 				continue;
+ 			}
+@@ -5055,7 +5055,7 @@ void WP_SaberStartMissileBlockCheck( gentity_t *self, usercmd_t *ucmd  )
+ 			if ( (dot1 = DotProduct( dir, forward )) < SABER_REFLECT_MISSILE_CONE )
+ 				continue;
+ 		}
+-		else if ( !self->s.number )
++		else if ( G_IsCoopPlayer( self ) )
+ 		{//player never auto-blocks thrown sabers
+ 			continue;
+ 		}//NPCs always try to block sabers coming from behind!
+@@ -5082,7 +5082,7 @@ void WP_SaberStartMissileBlockCheck( gentity_t *self, usercmd_t *ucmd  )
+ 					continue;
+ 				}
+ 			}
+-			if ( self->s.number != 0 )
++			if ( !G_IsCoopPlayer( self ) )
+ 			{//An NPC
+ 				if ( self->NPC && !self->enemy && ent->owner )
+ 				{
+@@ -5191,7 +5191,7 @@ void WP_SaberUpdate( gentity_t *self, usercmd_t *ucmd )
+ 		else if ( self->client->ps.saberBlocking == BLK_TIGHT || self->client->ps.saberBlocking == BLK_WIDE )
+ 		{//FIXME: keep bbox in front of player, even when wide?
+ 			vec3_t	saberOrg;
+-			if ( ( (self->s.number&&!Jedi_SaberBusy(self)&&!g_saberRealisticCombat->integer) || (self->s.number == 0 && self->client->ps.saberBlocking == BLK_WIDE && (g_saberAutoBlocking->integer||self->client->ps.saberBlockingTime>level.time)) )
++			if ( ( (!G_IsCoopPlayer( self )&&!Jedi_SaberBusy(self)&&!g_saberRealisticCombat->integer) || (G_IsCoopPlayer( self ) && self->client->ps.saberBlocking == BLK_WIDE && (g_saberAutoBlocking->integer||self->client->ps.saberBlockingTime>level.time)) )
+ 				&& self->client->ps.weaponTime <= 0 )
+ 			{//full-size blocking for non-attacking player with g_saberAutoBlocking on
+ 				vec3_t saberang={0,0,0}, fwd, sabermins={-8,-8,-8}, sabermaxs={8,8,8};
+@@ -5346,7 +5346,7 @@ void WP_DropWeapon( gentity_t *dropper, vec3_t velocity )
+ 	}
+ 	//FIXME: does this work on the player?
+ 	dropper->client->ps.stats[STAT_WEAPONS] |= ( 1 << replaceWeap );
+-	if ( !dropper->s.number )
++	if ( G_IsCoopPlayer( dropper ) )
+ 	{
+ 		if ( oldWeap == WP_THERMAL )
+ 		{
+@@ -5413,7 +5413,7 @@ void WP_ResistForcePush( gentity_t *self, gentity_t *pusher, qboolean noPenalty
+ 	{
+ 		return;
+ 	}
+-	if ( (!self->s.number || self->client->NPC_class == CLASS_DESANN || self->client->NPC_class == CLASS_LUKE)
++	if ( (G_IsCoopPlayer( self ) || self->client->NPC_class == CLASS_DESANN || self->client->NPC_class == CLASS_LUKE)
+ 		&& (VectorLengthSquared( self->client->ps.velocity ) > 10000 || self->client->ps.forcePowerLevel[FP_PUSH] >= FORCE_LEVEL_3 || self->client->ps.forcePowerLevel[FP_PULL] >= FORCE_LEVEL_3 ) )
+ 	{
+ 		runningResist = qtrue;
+@@ -5480,7 +5480,7 @@ void WP_ForceKnockdown( gentity_t *self, gentity_t *pusher, qboolean pull, qbool
+ 
+ 	if ( self->health > 0 )
+ 	{
+-		if ( !self->s.number )
++		if ( G_IsCoopPlayer( self ) )
+ 		{
+ 			NPC_SetPainEvent( self );
+ 		}
+@@ -5509,7 +5509,7 @@ void WP_ForceKnockdown( gentity_t *self, gentity_t *pusher, qboolean pull, qbool
+ 			{//desann always knocks down, unless you're Luke
+ 				strongKnockdown = qtrue;
+ 			}
+-			if ( !self->s.number
++			if ( G_IsCoopPlayer( self )
+ 				&& !strongKnockdown
+ 				&& ( (!pull&&(self->client->ps.forcePowerLevel[FP_PUSH]>FORCE_LEVEL_1||!g_spskill->integer)) || (pull&&(self->client->ps.forcePowerLevel[FP_PULL]>FORCE_LEVEL_1||!g_spskill->integer)) )	)
+ 			{//player only knocked down if pushed *hard*
+@@ -5608,7 +5608,7 @@ void ForceThrow( gentity_t *self, qboolean pull )
+ 	{//already pushing- now you can't haul someone across the room, sorry
+ 		return;
+ 	}
+-	if ( !self->s.number && (cg.zoomMode || in_camera) )
++	if ( (!self->s.number && cg.zoomMode) || (G_IsCoopPlayer( self ) && in_camera) )
+ 	{//can't force throw/pull when zoomed in or in cinematic
+ 		return;
+ 	}
+@@ -5796,7 +5796,7 @@ void ForceThrow( gentity_t *self, qboolean pull )
+ 									{//not a limb
+ 										if ( ent->s.weapon == WP_TURRET && !Q_stricmp( "PAS", ent->classname ) && ent->s.apos.trType == TR_STATIONARY )
+ 										{//can knock over placed turrets
+-											if ( !self->s.number || self->enemy != ent )
++											if ( G_IsCoopPlayer( self ) || self->enemy != ent )
+ 											{//only NPCs who are actively mad at this turret can push it over
+ 												continue;
+ 											}
+@@ -6015,14 +6015,14 @@ void ForceThrow( gentity_t *self, qboolean pull )
+ 
+ 
+ 				//okay, everyone else (or player who couldn't resist it)...
+-				if ( ((self->s.number == 0 && Q_irand( 0, 2 ) ) || Q_irand( 0, 2 ) ) && push_list[x]->client && push_list[x]->health > 0 //a living client
++				if ( ((G_IsCoopPlayer( self ) && Q_irand( 0, 2 ) ) || Q_irand( 0, 2 ) ) && push_list[x]->client && push_list[x]->health > 0 //a living client
+ 						&& push_list[x]->client->ps.weapon == WP_SABER //Jedi
+ 						&& push_list[x]->health > 0 //alive
+ 						&& (self->client->NPC_class != CLASS_DESANN || !Q_irand( 0, 2 ) )//only 30% chance of resisting a Desann push
+ 						&& push_list[x]->client->ps.groundEntityNum != ENTITYNUM_NONE //on the ground
+ 						&& InFront( self->currentOrigin, push_list[x]->currentOrigin, push_list[x]->client->ps.viewangles, 0.3f ) //I'm in front of him
+ 						&& ( push_list[x]->client->ps.powerups[PW_FORCE_PUSH] > level.time ||//he's pushing too
+-								(push_list[x]->s.number != 0 && push_list[x]->client->ps.weaponTime < level.time)//not the player and not attacking (NPC jedi auto-defend against pushes)
++								(!G_IsCoopPlayer( push_list[x] ) && push_list[x]->client->ps.weaponTime < level.time)//not the player and not attacking (NPC jedi auto-defend against pushes)
+ 						   )
+ 					)
+ 				{//Jedi don't get pushed, they resist as long as they aren't already attacking and are on the ground
+@@ -6159,7 +6159,7 @@ void ForceThrow( gentity_t *self, qboolean pull )
+ 				else */if ( push_list[x]->owner && push_list[x]->owner->client && push_list[x]->owner->client->ps.saberActive && push_list[x]->s.pos.trType == TR_LINEAR && push_list[x]->owner->client->ps.saberEntityState != SES_RETURNING )
+ 				{//it's on and being controlled
+ 					//FIXME: prevent it from damaging me?
+-					if ( self->s.number == 0 || Q_irand( 0, 2 ) )
++					if ( G_IsCoopPlayer( self ) || Q_irand( 0, 2 ) )
+ 					{//certain chance of throwing it aside and turning it off?
+ 						//give it some velocity away from me
+ 						//FIXME: maybe actually push or pull it?
+@@ -6544,7 +6544,7 @@ void ForceSpeed( gentity_t *self, int duration )
+ 	{//FIXME: can this be a way to break out?
+ 		return;
+ 	}
+-	if ( !self->s.number && in_camera )
++	if ( G_IsCoopPlayer( self ) && in_camera )
+ 	{//player can't use force powers in cinematic
+ 		return;
+ 	}
+@@ -6577,7 +6577,7 @@ void ForceHeal( gentity_t *self )
+ 	{//FIXME: can this be a way to break out?
+ 		return;
+ 	}
+-	if ( !self->s.number && in_camera )
++	if ( G_IsCoopPlayer( self ) && in_camera )
+ 	{//player can't use force powers in cinematic
+ 		return;
+ 	}
+@@ -6648,7 +6648,7 @@ qboolean WP_CheckBreakControl( gentity_t *self )
+ 	{
+ 		return qfalse;
+ 	}
+-	if ( !self->s.number )
++	if ( G_IsCoopPlayer( self ) )
+ 	{//player
+ 		if ( self->client && self->client->ps.forcePowerLevel[FP_TELEPATHY] > FORCE_LEVEL_3 )
+ 		{//control-level
+@@ -6668,8 +6668,8 @@ qboolean WP_CheckBreakControl( gentity_t *self )
+ 	{//NPC
+ 		if ( self->NPC && self->NPC->controlledTime > level.time )
+ 		{//being controlled
+-			gentity_t *controller = &g_entities[0];
+-			if ( controller->client && controller->client->ps.viewEntity == self->s.number )
++			gentity_t *controller = G_CoopViewer( self );	// jk2coop: any player, not only the host
++			if ( controller && controller->client && controller->client->ps.viewEntity == self->s.number )
+ 			{//we are being controlled by player
+ 				if ( controller->client->ps.forcePowerLevel[FP_TELEPATHY] > FORCE_LEVEL_3 )
+ 				{//control-level mind trick
+@@ -6712,7 +6712,7 @@ void ForceTelepathy( gentity_t *self )
+ 	{//FIXME: can this be a way to break out?
+ 		return;
+ 	}
+-	if ( !self->s.number && in_camera )
++	if ( G_IsCoopPlayer( self ) && in_camera )
+ 	{//player can't use force powers in cinematic
+ 		return;
+ 	}
+@@ -6877,7 +6877,7 @@ void ForceGrip( gentity_t *self )
+ 	{
+ 		return;
+ 	}
+-	if ( !self->s.number && (cg.zoomMode || in_camera) )
++	if ( (!self->s.number && cg.zoomMode) || (G_IsCoopPlayer( self ) && in_camera) )
+ 	{//can't force grip when zoomed in or in cinematic
+ 		return;
+ 	}
+@@ -7091,7 +7091,7 @@ void ForceLightning( gentity_t *self )
+ 	{
+ 		return;
+ 	}
+-	if ( !self->s.number && (cg.zoomMode || in_camera) )
++	if ( (!self->s.number && cg.zoomMode) || (G_IsCoopPlayer( self ) && in_camera) )
+ 	{//can't force lightning when zoomed in or in cinematic
+ 		return;
+ 	}
+@@ -7505,7 +7505,7 @@ void ForceJump( gentity_t *self, usercmd_t *ucmd )
+ 	{
+ 		return;
+ 	}
+-	if ( !self->s.number && (cg.zoomMode || in_camera) )
++	if ( (!self->s.number && cg.zoomMode) || (G_IsCoopPlayer( self ) && in_camera) )
+ 	{//can't force jump when zoomed in or in cinematic
+ 		return;
+ 	}
 @@ -7655,6 +7655,10 @@ void WP_ForcePowerStart( gentity_t *self, forcePowers_t forcePower, int override
  	case FP_SPEED:
  		//duration is always 5 seconds, player time
@@ -6781,6 +9910,33 @@ index 04c5aa2..931adef 100644
  		{//player using force speed
  			gi.cvar_set("timescale", va("%4.2f", speed));
  			if ( g_timescale->value > speed )
+@@ -8053,7 +8060,7 @@ static void WP_ForcePowerRun( gentity_t *self, forcePowers_t forcePower, usercmd
+ 		break;
+ 	case FP_GRIP:
+ 		if ( !WP_ForcePowerAvailable( self, FP_GRIP, 0 )
+-			|| (self->client->ps.forcePowerLevel[FP_GRIP]>FORCE_LEVEL_1&&!self->s.number&&!(cmd->buttons&BUTTON_FORCEGRIP)) )
++			|| (self->client->ps.forcePowerLevel[FP_GRIP]>FORCE_LEVEL_1&&G_IsCoopPlayer( self )&&!(cmd->buttons&BUTTON_FORCEGRIP)) )
+ 		{
+ 			WP_ForcePowerStop( self, FP_GRIP );
+ 			return;
+@@ -8172,7 +8179,7 @@ static void WP_ForcePowerRun( gentity_t *self, forcePowers_t forcePower, usercmd
+ 							//FIXME: why does he turn back to his original angles once he dies or is let go?
+ 						}
+ 					}
+-					else if ( !gripEnt->s.number )
++					else if ( G_IsCoopPlayer( gripEnt ) )
+ 					{
+ 						//vectoangles( dir, angles );
+ 						//gripEnt->client->ps.viewangles[0] = -angles[0];
+@@ -8324,7 +8331,7 @@ void WP_ForcePowersUpdate( gentity_t *self, usercmd_t *ucmd )
+ 		return;
+ 	}
+ 
+-	if ( !self->s.number )
++	if ( G_IsCoopPlayer( self ) )
+ 	{//player uses different kind of force-jump
+ 	}
+ 	else
 diff --git a/codeJK2/game/wp_thermal.cpp b/codeJK2/game/wp_thermal.cpp
 index bd8049d..e0ad0bd 100644
 --- a/codeJK2/game/wp_thermal.cpp

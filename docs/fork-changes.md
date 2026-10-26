@@ -12,9 +12,9 @@ Patch `0032` applies cleanly on top of `0001`–`0031` with or without the
 optional `0023-widescreen` / `0024-render-fidelity` features. The project's
 pure-Go patch engine produces the same tree as `git apply`. Most of the work
 was tested in same-PC split-screen sessions (host + one joiner), and an
-automated crawl loaded all 26 campaign maps with a joiner (see below). It
-has not yet been re-verified on two separate machines, and 3–4 player games
-are untested.
+automated crawl loaded all 26 campaign maps with a joiner (see below).
+Network play between two PCs on a home LAN works; 3–4 player games are
+untested.
 
 Terms used below: the **host** runs the campaign; a **joiner** is a remote
 client (player 2–4) that draws the host's world from snapshots.
@@ -152,12 +152,57 @@ client (player 2–4) that draws the host's world from snapshots.
   speed blur and the ripple on pushed targets. They travel in spare
   `entityState.powerups` bits, widened to 32 bits on the wire.
 
+## Campaign screens, cutscenes and remote views for joiners
+
+- **Objectives and mission status**: the host publishes objective states,
+  the datapad flash and the mission-failed text in a configstring
+  (`CS_COOP_STATE`, first slot of the `CS_RESERVED1` block); joiners read
+  their datapad from it (`codeJK2/cgame/cg_info.cpp`).
+- **Cutscenes**: the host's final camera view (position, angles, FOV,
+  letterbox bars, fade) is sent through an invisible broadcast entity
+  (`G_CoopCutsceneSync`), so joiners watch the same cutscene with the stock
+  letterbox and HUD code. Joiners are not solid during cutscenes, so they
+  can't block actors, and USE skips as for the host.
+- **Server viewpoint fix** (`code/server/sv_snapshot.cpp`): snapshots for
+  joiners were built from the host's camera position (third person, saber
+  view, remote views). Each joiner now gets its own: cutscene camera, its
+  own remote view, or its own eyes.
+- **Remote views for joiners**: security cameras, panel turrets, droid
+  control and the drivable AT-ST (`G_CoopViewer`, `STAT_COOP_VIEWKIND`).
+  The host's own camera and weapon are no longer changed when a joiner uses
+  one.
+- **Lightsaber**: about 45 more player checks in `wp_saber.cpp` include
+  joiners. Fixed: Force Speed with joiners present made saber damage zero.
+- **Joiner's screen**: crosshair turns red/green over enemies/friendlies
+  (team in spare `entityState.powerups` bits, trace against snapshot
+  entities); pistol charge glow on the barrel; dropped items lie flat;
+  AT-ST weapon selection uses the joiner's own weapons.
+- **Animation clock fix**: opening a full-screen menu on a joiner (e.g. the
+  datapad) froze every character animation. The UI no longer touches the
+  Ghoul2 server clock on a joiner, and the client resets it each frame when
+  no local server runs (`code/ui/ui_main.cpp`, `code/client/cl_cgame.cpp`).
+
+## Feature test bot
+
+- `jk2coop-levelcrawl.ps1 -GapTest` runs the crawl with feature tests on
+  kejim_post and ns_starpad (or `-Maps`). The host's bot (`GT_RunTest`,
+  `codeJK2/game/g_utils.cpp`) sets up each situation and sends
+  `cooptest <test>` to the joiner, whose game checks what it sees
+  (`CG_CoopTestFrame`, `codeJK2/cgame/cg_view.cpp`) and logs PASS/FAIL.
+- Tests: `obj` (objectives), `cam` (cutscene camera, joiner non-solid),
+  `snapview` (server viewpoint), `camview`, `npcview`, `turret` (remote
+  views), `atst`, `team` (crosshair colour), `charge` (pistol glow),
+  `revive`, `menuclock` (animations after a menu).
+- `-Twin obj` breaks objective sync on purpose; the run must report FAIL.
+- Latest run: **RESULT: PASS (20 tests passed, 2 skipped; 2/2 maps)**. The
+  skips are tests with nothing to use on that map.
+
 ## Known gaps
 
-- Remote views (security cameras, droid control) and the AT-ST are host-only
-  for now.
-- Network play between two PCs and 3–4 player games still need testing.
+- Climbing into a drivable AT-ST by hand is not yet checked in a real level
+  (yavin_swamp). A crash was seen with both players in AT-STs through the
+  `drive_atst` cheat.
+- 3–4 player games still need testing.
 - Three intro cutscenes (artus_topside, valley, bespin_undercity) stalled in
   the crawl's fast-forward; not yet known whether that also happens in
   normal play.
-- Objectives UI for joiners: [Track F](campaign-ui-plan.md).

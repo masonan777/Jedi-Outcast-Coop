@@ -4,6 +4,9 @@ Star Wars Jedi Knight II: Jedi Outcast - co-op campaign (TEST BUILD)
 Based on Benehiko's jedi-outcast-coop (https://github.com/Benehiko/jedi-outcast-coop)
 and OpenJK. This fork: https://github.com/masonan777/Jedi-Outcast-Coop
 
+Free software under the GNU GPL v2 (LICENSE.txt); the source code is at the
+fork link above.
+
 You need your own copy of Jedi Outcast (Steam, GOG or disc). This package
 contains only the co-op build; it reads the game's data from your install
 and never changes it.

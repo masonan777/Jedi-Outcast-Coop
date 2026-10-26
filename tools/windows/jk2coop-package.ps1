@@ -7,13 +7,16 @@
       openjo_sp.x86_64.exe, rdjosp-vanilla_x86_64.dll, SDL2.dll,
       base\jospgamex86_64.dll, base\zz-coop-ui.pk3,
       Install-JK2Coop.ps1, Install.cmd, README.txt, version.txt
-    into dist\JK2Coop-test-<date>.zip in this repository.
+    into dist\JK2Coop-test-<date>.zip in this repository (-Name changes the
+    file name, e.g. -Name JK2Coop-v0.1 for a release).
 
     The zip holds only the co-op build. No Jedi Outcast game files go in it:
     the other PC needs its own copy of the game (Steam, GOG or disc).
 
 .EXAMPLE
     powershell -ExecutionPolicy Bypass -File .\tools\windows\jk2coop-package.ps1
+.EXAMPLE
+    powershell -ExecutionPolicy Bypass -File .\tools\windows\jk2coop-package.ps1 -BuildDir openjk\build-release -Name JK2Coop-v0.1
 #>
 [CmdletBinding()]
 param(
@@ -21,6 +24,8 @@ param(
     [string]$BuildDir = '',
     # where the zip goes (default: dist\ in this repository)
     [string]$OutDir = '',
+    # zip file name without .zip (default: JK2Coop-test-<date>)
+    [string]$Name = '',
     # also include the .pdb debug symbols (bigger zip, better crash reports)
     [switch]$Symbols
 )
@@ -29,18 +34,23 @@ $ErrorActionPreference = 'Stop'
 $here = $PSScriptRoot
 $repo = (Resolve-Path -LiteralPath (Join-Path $here '..\..')).Path
 if (-not $BuildDir) { $BuildDir = Join-Path $repo 'openjk\build' }
+if (-not [IO.Path]::IsPathRooted($BuildDir)) { $BuildDir = Join-Path $repo $BuildDir }
+# a fresh build folder has no SDL2.dll yet: take the one OpenJK ships
+$sdl = Join-Path $BuildDir 'SDL2.dll'
+if (-not (Test-Path -LiteralPath $sdl)) { $sdl = Join-Path $repo 'openjk\lib\SDL2\bin\x64\SDL2.dll' }
 if (-not $OutDir) { $OutDir = Join-Path $repo 'dist' }
 
 # what goes in, and where from
 $items = @(
     @{ From = (Join-Path $BuildDir 'openjo_sp.x86_64.exe');            To = 'openjo_sp.x86_64.exe' },
     @{ From = (Join-Path $BuildDir 'rdjosp-vanilla_x86_64.dll');       To = 'rdjosp-vanilla_x86_64.dll' },
-    @{ From = (Join-Path $BuildDir 'SDL2.dll');                        To = 'SDL2.dll' },
+    @{ From = $sdl;                                                    To = 'SDL2.dll' },
     @{ From = (Join-Path $BuildDir 'jospgamex86_64.dll');              To = 'base\jospgamex86_64.dll' },
     @{ From = (Join-Path $repo 'assets\coop-ui\zz-coop-ui.pk3');       To = 'base\zz-coop-ui.pk3' },
     @{ From = (Join-Path $here 'Install-JK2Coop.ps1');                 To = 'Install-JK2Coop.ps1' },
     @{ From = (Join-Path $here 'Install-JK2Coop.cmd');                 To = 'Install.cmd' },
-    @{ From = (Join-Path $here 'package-README.txt');                  To = 'README.txt' }
+    @{ From = (Join-Path $here 'package-README.txt');                  To = 'README.txt' },
+    @{ From = (Join-Path $repo 'LICENSE');                             To = 'LICENSE.txt' }
 )
 if ($Symbols) {
     $items += @{ From = (Join-Path $BuildDir 'openjo_sp.x86_64.pdb'); To = 'openjo_sp.x86_64.pdb' }
@@ -82,7 +92,8 @@ Set-Content -LiteralPath (Join-Path $stage 'version.txt') -Encoding ASCII -Value
     "game:    $dllTime")
 
 New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
-$zip = Join-Path $OutDir "JK2Coop-test-$stamp.zip"
+if (-not $Name) { $Name = "JK2Coop-test-$stamp" }
+$zip = Join-Path $OutDir "$Name.zip"
 Compress-Archive -Path (Join-Path $stage '*') -DestinationPath $zip -Force
 Remove-Item -LiteralPath $stage -Recurse -Force
 
